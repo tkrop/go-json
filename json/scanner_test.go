@@ -2341,6 +2341,8 @@ func setupScanNext_(
 // provided functions for scanning quoted strings, numbers, and relaxed tokens.
 // This allows for flexible tokenization strategies for testing while
 // maintaining a consistent scanning loop.
+//
+//revive:disable:max-control-nesting // prioritize performance.
 func setupScanNext_x(
 	quoted func(*Scanner, byte) (byte, []byte, int, int, int),
 	numbers func(*Scanner, int, []byte) (byte, int, int),
@@ -2386,6 +2388,8 @@ func setupScanNext_x(
 		return s.commit_(relaxed(s))
 	}
 }
+
+//revive:enable:max-control-nesting
 
 // testScanNext tests the scanning of tokens using the provided next function.
 // It iterates through the expected tokens and positions, comparing them

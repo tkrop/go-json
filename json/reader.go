@@ -203,6 +203,7 @@ func (b *Reader) compare(offset int, expect []byte) bool {
 // a non-space byte is encountered.
 //
 //nolint:gocognit // prioritize performance.
+//revive:disable-next-line:cognitive-complexity // prioritize performance.
 func (b *Reader) skip() int {
 	offset, line, char := 0, 0, 0
 	for {
