@@ -68,7 +68,7 @@ including:
 
 * Support for unquoted keys in objects.
 * Support for escape sequences in strings, including `\n`, `\t`, `\\`, etc.
-* Support for single-line (//) and multi-line (/\* ... \*/) comments.
+* Support for single-line (`//`) and multi-line (`/* ... */`) comments.
 * Support for integer, decimal, and hexadecimal numbers (e.g., `0x1E`).
 * Support for Unicode escape sequences in strings (e.g., `\u{1F600}`,
   `\U0X1F4A9`).

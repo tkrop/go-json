@@ -7,7 +7,7 @@ require (
 	github.com/pkg/json v0.0.0-20231102085813-703c45db51c1
 	github.com/stretchr/testify v1.11.1
 	github.com/titanous/json5 v1.0.0
-	github.com/tkrop/go-testing v0.2.1-0.20260701195653-550426668d5e
+	github.com/tkrop/go-testing v0.3.0
 	github.com/yosuke-furukawa/json5 v0.1.1
 	gopkg.in/yaml.v3 v3.0.1
 )

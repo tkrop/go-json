@@ -440,10 +440,10 @@ func (d *Decoder) Decode(value any) error {
 // in the given reflect.Value. The value must be settable. The function is
 // responsible for recursively decoding nested objects and arrays.
 //
-//nolint:gocognit,gocyclo,cyclop,funlen,maintidx // we prioritize speed.
-//revive:disable:function-length -- we prioritize speed.
-//revive:disable:cognitive-complexity -- we prioritize speed.
-//revive:disable:cyclomatic -- we prioritize speed.
+//nolint:gocognit,gocyclo,cyclop,funlen,maintidx // prioritize performance.
+//revive:disable:function-length -- prioritize performance.
+//revive:disable:cognitive-complexity -- prioritize performance.
+//revive:disable:cyclomatic -- prioritize performance.
 func (d *Decoder) decodeValue(v reflect.Value) error {
 	typ, token, err := d.Next()
 	if err != nil {
@@ -671,7 +671,7 @@ func (d *Decoder) decodeValue(v reflect.Value) error {
 // type of the value is not known in advance. The function is responsible for
 // recursively decoding nested objects and arrays.
 //
-//nolint:cyclop,funlen // we prioritize speed.
+//nolint:cyclop,funlen // prioritize performance.
 func (d *Decoder) decodeValueAny() (any, error) {
 	typ, token, err := d.Next()
 	if err != nil {
@@ -796,8 +796,9 @@ func (d *Decoder) decodeMap(v reflect.Value) error {
 // type of the value is not known in advance. The function is responsible for
 // recursively decoding nested objects and arrays.
 //
-//nolint:gocognit,cyclop,funlen // we prioritize speed.
-//revive:disable:cyclomatic -- we prioritize speed.
+//nolint:gocognit,cyclop,funlen // prioritize performance.
+//revive:disable-next-line:cyclomatic // prioritize performance.
+//revive:disable-next-line:cognitive-complexity // prioritize performance.
 func (d *Decoder) decodeSliceAny() ([]any, error) {
 	s := make([]any, 0, 1)
 	for {

@@ -42,6 +42,7 @@ func unihex(b []byte) (rune, bool) {
 // bytes are needed to determine the whitespace character.
 //
 //nolint:gocognit // prioritize performance.
+//revive:disable-next-line:cognitive-complexity // prioritize performance.
 func uspace(window []byte, offset int) (int, bool, bool) {
 	if window[offset] == 0xC2 {
 		if offset+1 >= len(window) {

@@ -1,5 +1,3 @@
-## Maintained by: github.com/tkrop/go-make
-
 # Translates the 'golangci-lint' settings into an Codacy understandable format.
 
 # When set to false, ignores files with "GENERATED" header.
@@ -82,6 +80,18 @@ enableAllRules = true
 [rule.confusing-naming]
   disabled = true
 
+# Rule prevents intentional usage of longer signatures for performance reasons.
+[rule.confusing-results]
+  disabled = true
+
+# Rule prevents intentional usage of larger results for performance reasons.
+[rule.function-result-limit]
+  disabled = true
+
+# Rules prevents intentional override of builtin identifiers.
+[rule.redefines-builtin-id]
+  disabled = true
+
 # Rule prevents intentional usage of explicit exhaustive switches.
 [rule.useless-fallthrough]
   disabled = true
@@ -123,8 +133,8 @@ enableAllRules = true
   arguments = [6]
 
 # Limit results of functions to the maximum understandable value.
-[rule.function-result-limit]
-  arguments = [4]
+#[rule.function-result-limit]
+#  arguments = [4]
 
 # Raise the limit a bit to allow more complex package models.
 [rule.max-public-structs]
