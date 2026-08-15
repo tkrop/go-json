@@ -280,6 +280,7 @@ var jsoncTestCases = map[string]parserParams{
 		expect: &map[string]string{"key": "value", "num": ""},
 		error: &json.UnmarshalTypeError{
 			Value: "number", Type: reflect.TypeOf(""), Offset: 23,
+			Field: "num",
 		},
 	},
 	"slice-failure": {
@@ -288,6 +289,7 @@ var jsoncTestCases = map[string]parserParams{
 		expect: &[]int{1, 2, 0, 4, 5},
 		error: &json.UnmarshalTypeError{
 			Value: "string", Type: reflect.TypeOf(0), Offset: 14,
+			Field: "2",
 		},
 	},
 }

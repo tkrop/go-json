@@ -1,65 +1,15 @@
 //nolint:gocognit,gocyclo,cyclop,nestif,funlen,maintidx // priority speed.
-//revive:disable:function-length -- priority speed.
-//revive:disable:cognitive-complexity -- priority speed.
-//revive:disable:max-control-nesting -- priority speed.
-//revive:disable:cyclomatic -- priority speed.
+//revive:disable:function-length // priority speed.
+//revive:disable:function-result-limit // priority speed.
+//revive:disable:cognitive-complexity // priority speed.
+//revive:disable:max-control-nesting // priority speed.
+//revive:disable:confusing-results // priority speed.
+//revive:disable:cyclomatic // priority speed.
 package json
 
 import (
 	"io"
 	"unicode/utf8"
-)
-
-// Basic JSON token types for scanning.
-const (
-	// ObjectStart `{` - the object start.
-	ObjectStart byte = '{'
-	// ObjectEnd `}` - the object end.
-	ObjectEnd byte = '}'
-	// ArrayStart `[` - the array start.
-	ArrayStart byte = '['
-	// ArrayEnd `]` - the array end.
-	ArrayEnd byte = ']'
-	// Comma `,` - the literal comma.
-	Comma byte = ','
-	// Colon `:` - the literal colon.
-	Colon byte = ':'
-	// Space ` ` - a white space token.
-	Space byte = ' '
-	// Comment `/` - a single-line comment token (`//`).
-	Comment byte = '/'
-	// CommentMulti `*` - a multi-line comment token (`/*...*/`).
-	CommentMulti byte = '*'
-	// Escape `\` - a backslash escape token.
-	Escape byte = '\\'
-	// Quote `'` - a single quote string token.
-	Quote byte = '\''
-	// String `"` - a double quote string token.
-	String byte = '"'
-	// True `t` - the literal true token.
-	True byte = 't'
-	// False `f` - the literal false token.
-	False byte = 'f'
-	// Null `n` - the literal null token.
-	Null byte = 'n'
-)
-
-// Special JSON token types for scanning.
-const (
-	// NaN `N` - the literal NaN token.
-	NaN byte = 'N'
-	// Infinity `I` - the literal Infinity token.
-	Infinity byte = 'I'
-	// Integer `i` - the literal integer token.
-	Integer byte = 'i'
-	// Decimal `d` - the literal decimal token.
-	Decimal byte = 'd'
-	// Complex `c` - the literal complex token.
-	Complex byte = 'c'
-	// HexaDecimal `x` - the literal hexadecimal token.
-	HexaDecimal byte = 'x'
-	// EOF `\0` - the end of a token stream.
-	EOF byte = 0x00
 )
 
 // Character types for JSON scanning.
@@ -156,21 +106,78 @@ var keywords = [256][]byte{
 	'N': _NaN_,
 }
 
-// Scanner implements a relaxed JSON5 scanner producing a stream of tokens
-// from an underlying io.Reader.
-type Scanner struct {
-	reader    Reader
-	offset    int
-	imaginary bool
+// Scanner provides an interface that scans input into a stream of tokens.
+// `Json` has the same scanning behavior as `Strict`. The JSON-specific
+// grammar restrictions need to be enforced by the `Decoder`.
+//
+// FIXME: Check how we can add context-less scanning with same feature.
+// FIXME: Check how we can add unified position tracking.
+type Scanner interface {
+	// SetMode sets the scanning mode for the scanner.
+	SetMode(mode Mode) Scanner
+	// GetMode returns the scanning mode for the scanner.
+	GetMode() Mode
+	// Next returns the next lexical token in the stream consisting of a token
+	// type and a token slice containing the extracted token content. The token
+	// content references the internal buffer of the reader and is valid until
+	// the next call to `Next`.
+	Next(ctx ScanContext) (byte, []byte)
+	// Position returns the current scanner stream position. The position
+	// includes the byte offset, line number, and character offset within the
+	// line. The position is updated as the scanner consumes input via `Next`.
+	Position() Position
+	// Error returns the first error encountered by the scanner, if any. When
+	// the underlying reader is exhausted, Error returns `io.EOF`.
+	Error() error
 }
 
-// NewScanner returns a new Scanner reading from the supplied `io.Reader` using
-// the supplied buffer for scanning. The Scanner operates in-place on the
-// buffer, producing a stream of tokens via `Next`, expressed as []byte slices.
-// The []byte slices reference the internal buffer of the Scanner and are valid
+// scanner implements a relaxed JSON5 scanner producing a stream of tokens
+// from an underlying `Reader`. It only enforces `Strict` scanning behavior
+// for JSON5, i.e. strict `Json` grammar needs to be enforced by the decoder.
+type scanner struct {
+	// The underlying JSON5 reader.
+	reader Reader
+	// The mode used for scanning.
+	mode Mode
+
+	// offset is the current scanner offset in the reader window.
+	offset int
+	// iscomplex indicates if the current number token is a complex number.
+	iscomplex bool
+}
+
+// NewScanner creates a new scanner reading from the supplied `Reader`. The
+// scanner operates in-place on the internal buffer of the Reader producing a
+// stream of tokens via `Next`, expressed as []byte slices. The []byte slices
+// reference the internal buffer of the Reader and are valid until the next
+// call to `Next`.
+func NewScanner(reader *Reader) Scanner {
+	return &scanner{
+		reader: *reader,
+		mode:   Relaxed | Extended,
+	}
+}
+
+// NewScannerSource returns a new scanner reading from the supplied `io.Reader`
+// using the supplied buffer for scanning. The scanner operates in-place on the
+// buffer producing a stream of tokens via `Next`, expressed as []byte slices.
+// The []byte slices reference the internal buffer of the scanner and are valid
 // until the next call to `Next`.
-func NewScanner(reader io.Reader, buffer []byte) *Scanner {
-	return &Scanner{reader: *NewReader(buffer, reader)}
+func NewScannerSource(reader io.Reader, buffer []byte) Scanner {
+	return NewScanner(NewSource(reader, buffer))
+}
+
+// SetMode sets the mode used for scanning and reading.
+func (s *scanner) SetMode(mode Mode) Scanner {
+	s.reader.SetMode(mode)
+	s.mode = mode
+
+	return s
+}
+
+// GetMode returns the mode used for scanning and reading.
+func (s *scanner) GetMode() Mode {
+	return s.mode
 }
 
 // Position returns the current scanner stream position. When used with
@@ -178,13 +185,13 @@ func NewScanner(reader io.Reader, buffer []byte) *Scanner {
 // and character positions are updated. However, since this comes with a
 // performance cost of roughly 20%, this is only recommended when the token
 // location is required for debugging.
-func (s *Scanner) Position() Position {
+func (s *scanner) Position() Position {
 	return s.reader.position()
 }
 
-// Error returns the first error encountered. When the underlying reader is
-// exhausted, Error returns io.EOF.
-func (s *Scanner) Error() error {
+// Error returns the first error encountered by the scanner, if any. When the
+// underlying reader is exhausted, Error returns io.EOF.
+func (s *scanner) Error() error {
 	return s.reader.err
 }
 
@@ -204,50 +211,67 @@ func (s *Scanner) Error() error {
 // * `n` - the literal `null` value.
 // * `t` - the literal `true` value.
 // * `f` - the literal `false` value.
-// * `"` - a string, possibly containing backslash escaped entities.
+// * `"` - a double-quoted string (with backslash escaped entities).
+// * `'` - a single-quoted string (with backslash escaped entities).
+// * `_` - an unquoted plain string (with backslash escaped entities).
 // * `I` - the numeric `[+|-]Infinity` value.
 // * `N` - the numeric `NaN` value.
 // * `ì` - a numeric integer number.
 // * `d` - a numeric decimal (floating point) number.
 // * `c` - a numeric complex number.
 // * `x` - a numeric hexadecimal number.
+// * `z` - a zero value of an omitted value.
 //
 // Note: Due to the relaxed nature of the parser allowing to write strings
 // without quotes, the scanner skips empty strings unless explicitly quoted.
-func (s *Scanner) Next() (byte, []byte) {
+func (s *scanner) Next(ctx ScanContext) (byte, []byte) {
+	relax := s.mode&Relaxed != 0
+	eof := s.reader.err != nil
 	if skip := s.skip(0); skip != 0 {
 		s.reader.advance(skip)
 	}
 
-	char, ok := s.reader.peek()
+	ch, ok := s.reader.peek()
 	if !ok {
+		if relax && !eof && s.zeroRoot(ctx) {
+			return Zero, nil
+		}
+
 		return EOF, nil
 	}
 
 	// TODO: check if-optimization?
-	switch mask[char] & base {
+	switch mask[ch] & base {
 	case delim:
-		return s.commit(char, []byte{char}, 1)
+		if relax && s.zeroToken(ctx, ch) {
+			return s.commit(Zero, s.reader.tokens(1), 1)
+		}
+
+		return s.commit(ch, s.reader.tokens(1), 1)
 
 	case keyword:
-		if offset, _ := s.keyword(char); offset != 0 {
-			token := s.reader.window()[:offset]
+		if offset, _ := s.keyword(ch); offset != 0 {
+			token := s.reader.tokens(offset)
 
-			return s.commit(char, token, offset)
+			return s.commit(ch, token, offset)
 		}
 
 	case number:
 		if typ, offset, _ := s.number(0, s.reader.window()); typ != EOF {
-			token := s.reader.window()[:offset]
+			token := s.reader.tokens(offset)
 
 			return s.commit(typ, token, offset)
 		}
 
 	case strng:
-		return s.commit(s.quoted(char))
+		return s.commit(s.quoted(ch))
 	}
 
-	return s.commit(s.relaxed())
+	if relax {
+		return s.commit(s.relaxed())
+	}
+
+	return EOF, nil
 }
 
 // Next_ returns the next lexical token in the stream consisting of a token
@@ -266,13 +290,16 @@ func (s *Scanner) Next() (byte, []byte) {
 // * `n` - the literal `null` value.
 // * `t` - the literal `true` value.
 // * `f` - the literal `false` value.
-// * `"` - a string, possibly containing backslash escaped entities.
+// * `"` - a double-quoted string (with backslash escaped entities).
+// * `'` - a single-quoted string (with backslash escaped entities).
+// * `_` - an unquoted plain string (with backslash escaped entities).
 // * `I` - the numeric `[+|-]Infinity` value.
 // * `N` - the numeric `NaN` value.
 // * `ì` - a numeric integer number.
 // * `d` - a numeric decimal (floating point) number.
 // * `c` - a numeric complex number.
 // * `x` - a numeric hexadecimal number.
+// * `z` - a zero value of an omitted value.
 // * ` ` - a white space token.
 // * `/` - a comment token (`//` or `/*...*/`).
 // * `*` - a multi-line comment token (`/*...*/`).
@@ -283,7 +310,9 @@ func (s *Scanner) Next() (byte, []byte) {
 // Next_ is a variant of `Next` that calculates the token location in the
 // stream, without the need to manually track newlines and escapes in the
 // stream. However, this comes with a performance cost of roughly 20%.
-func (s *Scanner) Next_() (byte, []byte) {
+func (s *scanner) Next_(ctx ScanContext) (byte, []byte) {
+	relax := s.mode&Relaxed != 0
+	eof := s.reader.err != nil
 	offset, line, char, token := s.space_()
 	if offset != 0 {
 		return s.commit_(Space, token, offset, line, char)
@@ -291,13 +320,21 @@ func (s *Scanner) Next_() (byte, []byte) {
 
 	ch, ok := s.reader.peek()
 	if !ok {
+		if relax && !eof && s.zeroRoot(ctx) {
+			return Zero, nil
+		}
+
 		return EOF, nil
 	}
 
 	// TODO: check if-optimization?
 	switch mask[ch] & base {
 	case delim:
-		return s.commit_(ch, []byte{ch}, 1, 0, 1)
+		if relax && s.zeroToken(ctx, ch) {
+			return s.commit_(Zero, s.reader.tokens(1), 1, 0, 1)
+		}
+
+		return s.commit_(ch, s.reader.tokens(1), 1, 0, 1)
 
 	case comment:
 		if typ, token, offset, lines, char := s.comment_(0); offset != 0 {
@@ -306,14 +343,14 @@ func (s *Scanner) Next_() (byte, []byte) {
 
 	case keyword:
 		if offset, _ := s.keyword(ch); offset != 0 {
-			token := s.reader.window()[:offset]
+			token := s.reader.tokens(offset)
 
 			return s.commit_(ch, token, offset, 0, offset)
 		}
 
 	case number:
 		if typ, offset, _ := s.number(0, s.reader.window()); typ != EOF {
-			token := s.reader.window()[:offset]
+			token := s.reader.tokens(offset)
 
 			return s.commit_(typ, token, offset, 0, offset)
 		}
@@ -322,13 +359,38 @@ func (s *Scanner) Next_() (byte, []byte) {
 		return s.commit_(s.quoted_(ch))
 	}
 
-	return s.commit_(s.relaxed_())
+	if relax {
+		return s.commit_(s.relaxed_())
+	}
+
+	return EOF, nil
+}
+
+// zeroRoot checks if the current context is the root value and the reader is
+// at the beginning of the stream.
+func (s *scanner) zeroRoot(ctx ScanContext) bool {
+	//nolint:errorlint // Only required case is io.EOF comparison.
+	return ctx == RootValue && s.reader.err == io.EOF &&
+		s.reader.position().Byte == 0
+}
+
+// zeroToken checks whether the current context and next character indicate an
+// omitted object key or value.
+func (*scanner) zeroToken(ctx ScanContext, char byte) bool {
+	switch ctx {
+	case ObjectKey:
+		return char == Colon
+	case ObjectValue:
+		return char == Comma || char == ObjectEnd
+	default:
+		return false
+	}
 }
 
 // commit is a convenience function that advances the reader by the given
 // offset and resets the scanner's offset to 0. It returns the token type and
 // token value.
-func (s *Scanner) commit(
+func (s *scanner) commit(
 	typ byte, token []byte, offset int,
 ) (byte, []byte) {
 	s.reader.advance(offset)
@@ -340,7 +402,7 @@ func (s *Scanner) commit(
 // commit_ is a convenience function that advances the reader by the given
 // offset, lines, and char position, and resets the scanner's offset to 0. It
 // returns the token type and token value.
-func (s *Scanner) commit_(
+func (s *scanner) commit_(
 	typ byte, token []byte, offset, line, char int,
 ) (byte, []byte) {
 	s.reader.advance_(offset, line, char)
@@ -353,7 +415,7 @@ func (s *Scanner) commit_(
 // the consumed token and position deltas. It supports ASCII and UTF-8 encoded
 // JSON whitespace and may extend the reader window to complete multi-byte
 // sequences. It returns zero values when the next byte is not whitespace.
-func (s *Scanner) space_() (int, int, int, []byte) {
+func (s *scanner) space_() (int, int, int, []byte) {
 	offset, line, char := 0, 0, 0
 
 	for {
@@ -367,6 +429,7 @@ func (s *Scanner) space_() (int, int, int, []byte) {
 					char++
 				}
 				offset++
+
 				continue
 			}
 
@@ -379,6 +442,7 @@ func (s *Scanner) space_() (int, int, int, []byte) {
 				} else {
 					char++
 				}
+
 				continue
 			}
 
@@ -406,7 +470,7 @@ func (s *Scanner) space_() (int, int, int, []byte) {
 // comment parses JSON5 comments (`//`, `/*...*/`) starting at the given offset.
 // It returns the token offset past the comment, or zero if not a valid comment
 // is found.
-func (s *Scanner) comment(offset int) int {
+func (s *scanner) comment(offset int) int {
 	window := s.reader.window()
 	offset += 2
 
@@ -432,6 +496,7 @@ func (s *Scanner) comment(offset int) int {
 						return offset
 					}
 					offset += size
+
 					continue
 				} else if extend {
 					break
@@ -475,7 +540,7 @@ func (s *Scanner) comment(offset int) int {
 // comment_ parses JSON5 comments (`//`, `/*...*/`) starting at the given
 // offset and tracks line/char deltas for debug position reporting. It returns
 // the token offset past the comment, or zero if not a valid comment is found.
-func (s *Scanner) comment_(offset int) (byte, []byte, int, int, int) {
+func (s *scanner) comment_(offset int) (byte, []byte, int, int, int) {
 	window := s.reader.window()
 	offset += 2
 
@@ -504,6 +569,7 @@ func (s *Scanner) comment_(offset int) (byte, []byte, int, int, int) {
 					}
 					offset += size
 					char++
+
 					continue
 				} else if extend {
 					break
@@ -540,6 +606,7 @@ func (s *Scanner) comment_(offset int) (byte, []byte, int, int, int) {
 					offset++
 					line++
 					char = 0
+
 					continue
 				}
 
@@ -551,6 +618,7 @@ func (s *Scanner) comment_(offset int) (byte, []byte, int, int, int) {
 					} else {
 						char++
 					}
+
 					continue
 				} else if extend {
 					break
@@ -578,7 +646,7 @@ func (s *Scanner) comment_(offset int) (byte, []byte, int, int, int) {
 //
 // TODO: check optimization using a map of first char to expected token string.
 // TODO: check optimization returning (typ, token)
-func (s *Scanner) keyword(ch byte) (offset, skip int) {
+func (s *scanner) keyword(ch byte) (offset, skip int) {
 	//nolint:staticcheck // priority speed.
 	if ch == 'n' {
 		return s.token(1, _Null_[1:])
@@ -590,14 +658,14 @@ func (s *Scanner) keyword(ch byte) (offset, skip int) {
 		return s.token(1, _NaN_[1:])
 	} else if ch == 'I' {
 		return s.token(1, _Infinity_[1:])
-	} else {
-		return 0, 0
 	}
+
+	return 0, 0
 }
 
 // keywordx checks for JSON keywords using a lookup table instead of a switch
 // statement. This is the optimized variant for benchmarking against keyword().
-func (s *Scanner) keywordx(ch byte) (offset, skip int) {
+func (s *scanner) keywordx(ch byte) (offset, skip int) {
 	return s.token(1, keywords[ch][1:])
 }
 
@@ -605,7 +673,7 @@ func (s *Scanner) keywordx(ch byte) (offset, skip int) {
 // in the current window and that the full token is followed by a valid token
 // boundary. It returns the token end offset and the number of skipped bytes
 // before the following delimiter, if matching, or 0 otherwise.
-func (s *Scanner) token(offset int, expect []byte) (int, int) {
+func (s *scanner) token(offset int, expect []byte) (int, int) {
 	last := offset + len(expect)
 	if !s.reader.compare(offset, expect) {
 		return 0, 0
@@ -626,7 +694,7 @@ func (s *Scanner) token(offset int, expect []byte) (int, int) {
 // next non-whitespace character outside comments, or null if nothing is
 // skipped. The function may extend the reader window as needed to complete
 // multi-byte sequences or comments.
-func (s *Scanner) skip(offset int) int {
+func (s *scanner) skip(offset int) int {
 	start := offset
 
 	for {
@@ -636,12 +704,14 @@ func (s *Scanner) skip(offset int) int {
 			kind := mask[char] & base
 			if kind == space {
 				offset++
+
 				continue
 			}
 
 			size, _, extend := uspace(window, offset)
 			if size > 0 {
 				offset += size
+
 				continue
 			} else if extend {
 				break
@@ -654,6 +724,7 @@ func (s *Scanner) skip(offset int) int {
 				}
 				offset = next
 				window = s.reader.window()
+
 				continue
 			}
 
@@ -672,7 +743,7 @@ func (s *Scanner) skip(offset int) int {
 // numbers, as well as the special tokens `NaN` and `Infinity`. If the value
 // is not a number, the function returns the type EOF, an offset of 0, and 0
 // skipped bytes.
-func (s *Scanner) numbers(
+func (s *scanner) numbers(
 	offset int, window []byte,
 ) (byte, int, int) {
 	const (
@@ -696,10 +767,12 @@ next:
 			mask := mask[ch]
 			if mask&base == delim {
 				stop = true
+
 				break
 			} else if mask&base == space {
 				offset++
 				skip++
+
 				continue
 			}
 
@@ -707,12 +780,14 @@ next:
 			if bytes > 0 {
 				offset += bytes
 				skip += bytes
+
 				continue
 			} else if extend {
 				if s.reader.extend() == 0 {
 					return EOF, 0, 0
 				}
 				window = s.reader.window()
+
 				continue next
 			} else if skip > 0 {
 				return EOF, 0, 0
@@ -726,11 +801,13 @@ next:
 					} else {
 						state = digit1
 					}
+
 					break
 				} else if mask&sign != 0 {
 					break
 				} else if ch == '.' {
 					state = dot1
+
 					break
 				} else if ch == 'I' {
 					offset, skip := s.token(offset+1, _Infinity_[1:])
@@ -743,32 +820,40 @@ next:
 						return NaN, offset, skip
 					}
 				}
+
 				return EOF, 0, 0
 
 			case digit1:
 				if mask&digit != 0 {
 					break
 				}
+
 				fallthrough
 
 			case zero:
 				if ch == '.' {
 					state = dot1
+
 					break
 				} else if mask&exp != 0 {
 					state = exp1
+
 					break
 				} else if mask&hexs != 0 {
 					state = hex1
+
 					break
 				}
+
 				return EOF, 0, 0
 
 			case dot1:
 				if mask&digit != 0 {
 					state = digit2
+
 					break
 				}
+
 				return EOF, 0, 0
 
 			case digit2:
@@ -776,34 +861,42 @@ next:
 					break
 				} else if mask&exp != 0 {
 					state = exp1
+
 					break
 				}
+
 				return EOF, 0, 0
 
 			case exp1:
 				if mask&sign != 0 {
 					state = expsign1
+
 					break
 				}
+
 				fallthrough
 
 			case expsign1:
 				if mask&digit != 0 {
 					state = digit3
+
 					break
 				}
+
 				return EOF, 0, 0
 
 			case digit3:
 				if mask&digit != 0 {
 					break
 				}
+
 				return EOF, 0, 0
 
 			case hex1:
 				if mask&hex != 0 {
 					break
 				}
+
 				return EOF, 0, 0
 			}
 
@@ -822,6 +915,7 @@ next:
 				if offset-skip > 1 {
 					return Decimal, offset - skip, skip
 				}
+
 				fallthrough
 			default:
 				return EOF, 0, 0
@@ -838,7 +932,7 @@ next:
 // complex ('c') numbers, as well as the special tokens `NaN` and `Infinity`.
 // If the value is not a number, the function returns the type EOF, an offset
 // of 0, and 0 skipped bytes.
-func (s *Scanner) number(
+func (s *scanner) number(
 	offset int, window []byte,
 ) (byte, int, int) {
 	const (
@@ -855,6 +949,7 @@ func (s *Scanner) number(
 	)
 
 	state, stop, skip := begin, false, 0
+	extended := s.mode&Extended != 0
 
 next:
 	for {
@@ -863,10 +958,12 @@ next:
 			mask := mask[ch]
 			if mask&base == delim {
 				stop = true
+
 				break
 			} else if mask&base == space {
 				offset++
 				skip++
+
 				continue
 			}
 
@@ -874,12 +971,14 @@ next:
 			if bytes > 0 {
 				offset += bytes
 				skip += bytes
+
 				continue
 			} else if extend {
 				if s.reader.extend() == 0 {
 					return EOF, 0, 0
 				}
 				window = s.reader.window()
+
 				continue next
 			} else if skip > 0 {
 				return EOF, 0, 0
@@ -893,11 +992,13 @@ next:
 					} else {
 						state = digit1
 					}
+
 					break
 				} else if mask&sign != 0 {
 					break
 				} else if ch == '.' {
 					state = dot1
+
 					break
 				} else if ch == 'I' {
 					offset, skip := s.token(offset+1, _Infinity_[1:])
@@ -909,10 +1010,12 @@ next:
 					if offset != 0 {
 						return NaN, offset, skip
 					}
-				} else if ch == 'i' {
+				} else if ch == 'i' && extended {
 					state = complex
+
 					break
 				}
+
 				return EOF, 0, 0
 
 			case digit1:
@@ -924,26 +1027,35 @@ next:
 			case zero:
 				if ch == '.' {
 					state = dot1
+
 					break
 				} else if mask&exp != 0 {
 					state = exp1
+
 					break
 				} else if mask&hexs != 0 {
 					state = hex1
+
 					break
-				} else if mask&sign != 0 {
-					return s.complex(offset, window)
-				} else if ch == 'i' {
-					state = complex
-					break
+				} else if extended {
+					if mask&sign != 0 {
+						return s.complex(offset, window, false, s.number)
+					} else if ch == 'i' {
+						state = complex
+
+						break
+					}
 				}
+
 				return EOF, 0, 0
 
 			case dot1:
 				if mask&digit != 0 {
 					state = digit2
+
 					break
 				}
+
 				return EOF, 0, 0
 
 			case digit2:
@@ -951,45 +1063,62 @@ next:
 					break
 				} else if mask&exp != 0 {
 					state = exp1
+
 					break
-				} else if mask&sign != 0 {
-					return s.complex(offset, window)
-				} else if ch == 'i' {
-					state = complex
-					break
+				} else if extended {
+					if mask&sign != 0 {
+						return s.complex(offset, window, false, s.number)
+					} else if ch == 'i' {
+						state = complex
+
+						break
+					}
 				}
+
 				return EOF, 0, 0
 
 			case exp1:
 				if mask&sign != 0 {
 					state = expsign1
+
 					break
 				}
+
 				fallthrough
 
 			case expsign1:
 				if mask&digit != 0 {
 					state = digit3
+
 					break
 				}
+
 				return EOF, 0, 0
 
 			case digit3:
 				if mask&digit != 0 {
 					break
-				} else if mask&sign != 0 {
-					return s.complex(offset, window)
-				} else if ch == 'i' {
-					state = complex
-					break
+				} else if extended {
+					if mask&sign != 0 {
+						return s.complex(offset, window, false, s.number)
+					} else if ch == 'i' {
+						state = complex
+
+						break
+					}
 				}
+
 				return EOF, 0, 0
 
 			case hex1:
 				if mask&hex != 0 {
 					break
 				}
+
 				return EOF, 0, 0
+
+			case complex:
+				return s.complex(offset, window, true, s.number)
 			}
 
 			offset++
@@ -1009,6 +1138,7 @@ next:
 				if offset-skip > 1 {
 					return Decimal, offset - skip, skip
 				}
+
 				fallthrough
 			default:
 				return EOF, 0, 0
@@ -1019,27 +1149,33 @@ next:
 	}
 }
 
-// complex is a helper method that handles the additional imaginary  part of a
+// complex is a helper method that handles the additional imaginary part of a
 // complex number following a real part. The function adds a imaginary flag to
 // the scanner to mark the real part of the complex number. If the imaginary
 // part is successfully parsed, the function returns the complex token type and
 // the offset of the next token. If the imaginary part is not correctly parsed,
 // the function returns EOF and an offset of 0, indicating that the number is
 // not a complex number.
-func (s *Scanner) complex(
-	offset int, window []byte,
+func (s *scanner) complex(
+	offset int, window []byte, imaginary bool,
+	number func(int, []byte) (byte, int, int),
 ) (byte, int, int) {
-	if s.imaginary {
+	if s.iscomplex {
 		return EOF, 0, 0
 	}
 
-	s.imaginary = true
-	ch, offset, skip := s.number(offset, window)
-	s.imaginary = false
+	s.iscomplex = true
+	ch, offset, skip := number(offset, window)
+	s.iscomplex = false
 
-	if ch == Complex {
+	if imaginary {
+		if ch == Integer || ch == Decimal {
+			return Complex, offset, skip
+		}
+	} else if ch == Complex {
 		return Complex, offset, skip
 	}
+
 	return EOF, 0, 0
 }
 
@@ -1049,7 +1185,7 @@ func (s *Scanner) complex(
 // complex ('c') numbers, as well as the special tokens `NaN` and `Infinity`.
 // If the value is not a number, the function returns the type EOF, an offset
 // of 0, and 0 skipped bytes.
-func (s *Scanner) numberx(
+func (s *scanner) numberx(
 	offset int, window []byte,
 ) (byte, int, int) {
 	const (
@@ -1066,6 +1202,7 @@ func (s *Scanner) numberx(
 	)
 
 	state, stop, skip := begin, false, 0
+	extended := s.mode&Extended != 0
 
 next:
 	for {
@@ -1074,10 +1211,12 @@ next:
 			mask := mask[ch]
 			if mask&base == delim {
 				stop = true
+
 				break
 			} else if mask&base == space {
 				offset++
 				skip++
+
 				continue
 			}
 
@@ -1085,12 +1224,14 @@ next:
 			if bytes > 0 {
 				offset += bytes
 				skip += bytes
+
 				continue
 			} else if extend {
 				if s.reader.extend() == 0 {
 					return EOF, 0, 0
 				}
 				window = s.reader.window()
+
 				continue next
 			} else if skip > 0 {
 				return EOF, 0, 0
@@ -1102,64 +1243,90 @@ next:
 					goto advance
 				} else if ch == '.' {
 					state = dot1
+
 					goto advance
 				} else if mask&exp != 0 {
 					state = exp1
+
 					goto advance
 				} else if mask&hexs != 0 {
 					state = hex1
+
 					goto advance
-				} else if mask&sign != 0 {
-					return s.complexx(offset, window)
-				} else if ch == 'i' {
-					state = complex
-					goto advance
+				} else if extended {
+					if mask&sign != 0 {
+						return s.complex(offset, window, false, s.numberx)
+					} else if ch == 'i' {
+						state = complex
+
+						goto advance
+					}
 				}
+
 				return EOF, 0, 0
 			} else if state == digit2 {
 				if mask&digit != 0 {
 					goto advance
 				} else if mask&exp != 0 {
 					state = exp1
+
 					goto advance
-				} else if mask&sign != 0 {
-					return s.complexx(offset, window)
-				} else if ch == 'i' {
-					state = complex
-					goto advance
+				} else if extended {
+					if mask&sign != 0 {
+						return s.complex(offset, window, false, s.numberx)
+					} else if ch == 'i' {
+						state = complex
+
+						goto advance
+					}
 				}
+
 				return EOF, 0, 0
 			} else if state == digit3 {
 				if mask&digit != 0 {
 					goto advance
-				} else if mask&sign != 0 {
-					return s.complexx(offset, window)
-				} else if ch == 'i' {
-					state = complex
-					goto advance
+				} else if extended {
+					if mask&sign != 0 {
+						return s.complex(offset, window, false, s.numberx)
+					} else if ch == 'i' {
+						state = complex
+
+						goto advance
+					}
 				}
+
 				return EOF, 0, 0
 			} else if state == hex1 {
 				if mask&hex != 0 {
 					goto advance
 				}
+
 				return EOF, 0, 0
+			} else if state == complex {
+				return s.complex(offset, window, true, s.numberx)
 			} else if state == zero {
 				if ch == '.' {
 					state = dot1
+
 					goto advance
 				} else if mask&exp != 0 {
 					state = exp1
+
 					goto advance
 				} else if mask&hexs != 0 {
 					state = hex1
+
 					goto advance
-				} else if mask&sign != 0 {
-					return s.complexx(offset, window)
-				} else if ch == 'i' {
-					state = complex
-					goto advance
+				} else if extended {
+					if mask&sign != 0 {
+						return s.complex(offset, window, false, s.numberx)
+					} else if ch == 'i' {
+						state = complex
+
+						goto advance
+					}
 				}
+
 				return EOF, 0, 0
 			} else if state == begin {
 				if mask&digit != 0 {
@@ -1168,11 +1335,13 @@ next:
 					} else {
 						state = digit1
 					}
+
 					goto advance
 				} else if mask&sign != 0 {
 					goto advance
 				} else if ch == '.' {
 					state = dot1
+
 					goto advance
 				} else if ch == 'I' {
 					offset, skip := s.token(offset+1, _Infinity_[1:])
@@ -1184,31 +1353,40 @@ next:
 					if offset != 0 {
 						return NaN, offset, skip
 					}
-				} else if ch == 'i' {
+				} else if ch == 'i' && extended {
 					state = complex
+
 					goto advance
 				}
+
 				return EOF, 0, 0
 			} else if state == dot1 {
 				if mask&digit != 0 {
 					state = digit2
+
 					goto advance
 				}
+
 				return EOF, 0, 0
 			} else if state == exp1 {
 				if mask&sign != 0 {
 					state = expsign1
+
 					goto advance
 				} else if mask&digit != 0 {
 					state = digit3
+
 					goto advance
 				}
+
 				return EOF, 0, 0
 			} else if state == expsign1 {
 				if mask&digit != 0 {
 					state = digit3
+
 					goto advance
 				}
+
 				return EOF, 0, 0
 			}
 
@@ -1234,35 +1412,11 @@ next:
 
 		window = s.reader.window()
 	}
-}
-
-// complexx is a helper method that handles the additional imaginary  part of a
-// complex number following a real part. The function adds a imaginary flag to
-// the scanner to mark the real part of the complex number. If the imaginary
-// part is successfully parsed, the function returns the complex token type and
-// the offset of the next token. If the imaginary part is not correctly parsed,
-// the function returns EOF and an offset of 0, indicating that the number is
-// not a complex number.
-func (s *Scanner) complexx(
-	offset int, window []byte,
-) (byte, int, int) {
-	if s.imaginary {
-		return EOF, 0, 0
-	}
-
-	s.imaginary = true
-	ch, offset, skip := s.numberx(offset, window)
-	s.imaginary = false
-
-	if ch == Complex {
-		return Complex, offset, skip
-	}
-	return EOF, 0, 0
 }
 
 // numbery is a variant of number that uses composite mask checks to
 // distinguish numeric sub-types from other token kinds sharing high bits.
-func (s *Scanner) numbery(
+func (s *scanner) numbery(
 	offset int, window []byte,
 ) (byte, int, int) {
 	const (
@@ -1279,6 +1433,7 @@ func (s *Scanner) numbery(
 	)
 
 	state, stop, skip := begin, false, 0
+	extended := s.mode&Extended != 0
 
 next:
 	for {
@@ -1288,10 +1443,12 @@ next:
 			kind := mask & base
 			if kind == delim {
 				stop = true
+
 				break
 			} else if kind == space {
 				offset++
 				skip++
+
 				continue
 			}
 
@@ -1299,12 +1456,14 @@ next:
 			if bytes > 0 {
 				offset += bytes
 				skip += bytes
+
 				continue
 			} else if extend {
 				if s.reader.extend() == 0 {
 					return EOF, 0, 0
 				}
 				window = s.reader.window()
+
 				continue next
 			} else if skip > 0 {
 				return EOF, 0, 0
@@ -1318,11 +1477,13 @@ next:
 					} else {
 						state = digit1
 					}
+
 					break
 				} else if mask&(number|sign) == number|sign {
 					break
 				} else if ch == '.' {
 					state = dot1
+
 					break
 				} else if ch == 'I' {
 					offset, skip := s.token(offset+1, _Infinity_[1:])
@@ -1334,10 +1495,12 @@ next:
 					if offset != 0 {
 						return NaN, offset, skip
 					}
-				} else if ch == 'i' {
+				} else if ch == 'i' && extended {
 					state = complex
+
 					break
 				}
+
 				return EOF, 0, 0
 
 			case digit1:
@@ -1349,26 +1512,35 @@ next:
 			case zero:
 				if ch == '.' {
 					state = dot1
+
 					break
 				} else if mask&(base|exp) == exp {
 					state = exp1
+
 					break
 				} else if mask&(base|hexs) == hexs {
 					state = hex1
+
 					break
-				} else if mask&(number|sign) == number|sign {
-					return s.complexy(offset, window)
-				} else if ch == 'i' {
-					state = complex
-					break
+				} else if extended {
+					if mask&(number|sign) == number|sign {
+						return s.complex(offset, window, false, s.numbery)
+					} else if ch == 'i' {
+						state = complex
+
+						break
+					}
 				}
+
 				return EOF, 0, 0
 
 			case dot1:
 				if mask&(number|digit) == number|digit {
 					state = digit2
+
 					break
 				}
+
 				return EOF, 0, 0
 
 			case digit2:
@@ -1376,38 +1548,51 @@ next:
 					break
 				} else if mask&(base|exp) == exp {
 					state = exp1
+
 					break
-				} else if mask&(number|sign) == number|sign {
-					return s.complexy(offset, window)
-				} else if ch == 'i' {
-					state = complex
-					break
+				} else if extended {
+					if mask&(number|sign) == number|sign {
+						return s.complex(offset, window, false, s.numbery)
+					} else if ch == 'i' {
+						state = complex
+
+						break
+					}
 				}
+
 				return EOF, 0, 0
 
 			case exp1:
 				if mask&(number|sign) == number|sign {
 					state = expsign1
+
 					break
 				}
+
 				fallthrough
 
 			case expsign1:
 				if mask&(number|digit) == number|digit {
 					state = digit3
+
 					break
 				}
+
 				return EOF, 0, 0
 
 			case digit3:
 				if mask&(number|digit) == number|digit {
 					break
-				} else if mask&(number|sign) == number|sign {
-					return s.complexy(offset, window)
-				} else if ch == 'i' {
-					state = complex
-					break
+				} else if extended {
+					if mask&(number|sign) == number|sign {
+						return s.complex(offset, window, false, s.numbery)
+					} else if ch == 'i' {
+						state = complex
+
+						break
+					}
 				}
+
 				return EOF, 0, 0
 
 			case hex1:
@@ -1415,7 +1600,11 @@ next:
 					kind == number || ch == 'f') {
 					break
 				}
+
 				return EOF, 0, 0
+
+			case complex:
+				return s.complex(offset, window, true, s.numbery)
 			}
 
 			offset++
@@ -1435,6 +1624,7 @@ next:
 				if offset-skip > 1 {
 					return Decimal, offset - skip, skip
 				}
+
 				fallthrough
 			default:
 				return EOF, 0, 0
@@ -1445,35 +1635,9 @@ next:
 	}
 }
 
-// complexy is a helper method that handles the additional imaginary  part of a
-// complex number following a real part. The function adds a imaginary flag to
-// the scanner to mark the real part of the complex number. If the imaginary
-// part is successfully parsed, the function returns the complex token type and
-// the offset of the next token. If the imaginary part is not correctly parsed,
-// the function returns EOF and an offset of 0, indicating that the number is
-// not a complex number.
-//
-//nolint:misspell // intentional test name.
-func (s *Scanner) complexy(
-	offset int, window []byte,
-) (byte, int, int) {
-	if s.imaginary {
-		return EOF, 0, 0
-	}
-
-	s.imaginary = true
-	ch, offset, skip := s.numbery(offset, window)
-	s.imaginary = false
-
-	if ch == Complex {
-		return Complex, offset, skip
-	}
-	return EOF, 0, 0
-}
-
 // numberz combines numberx control flow (if/else and goto advance) with
 // numbery composite mask checks to allow additional marker bits in the table.
-func (s *Scanner) numberz(
+func (s *scanner) numberz(
 	offset int, window []byte,
 ) (byte, int, int) {
 	const (
@@ -1490,6 +1654,7 @@ func (s *Scanner) numberz(
 	)
 
 	state, stop, skip := begin, false, 0
+	extended := s.mode&Extended != 0
 
 next:
 	for {
@@ -1499,10 +1664,12 @@ next:
 			kind := mask & base
 			if kind == delim {
 				stop = true
+
 				break
 			} else if kind == space {
 				offset++
 				skip++
+
 				continue
 			}
 
@@ -1510,12 +1677,14 @@ next:
 			if bytes > 0 {
 				offset += bytes
 				skip += bytes
+
 				continue
 			} else if extend {
 				if s.reader.extend() == 0 {
 					return EOF, 0, 0
 				}
 				window = s.reader.window()
+
 				continue next
 			} else if skip > 0 {
 				return EOF, 0, 0
@@ -1527,65 +1696,89 @@ next:
 					goto advance
 				} else if ch == '.' {
 					state = dot1
+
 					goto advance
 				} else if mask&(base|exp) == exp {
 					state = exp1
+
 					goto advance
 				} else if mask&(base|hexs) == hexs {
 					state = hex1
+
 					goto advance
-				} else if mask&(number|sign) == number|sign {
-					return s.complexz(offset, window)
-				} else if ch == 'i' {
-					state = complex
-					goto advance
+				} else if extended {
+					if mask&(number|sign) == number|sign {
+						return s.complex(offset, window, false, s.numberz)
+					} else if ch == 'i' {
+						state = complex
+
+						goto advance
+					}
 				}
+
 				return EOF, 0, 0
 			} else if state == digit2 {
 				if mask&(number|digit) == number|digit {
 					goto advance
 				} else if mask&(base|exp) == exp {
 					state = exp1
+
 					goto advance
-				} else if mask&(number|sign) == number|sign {
-					return s.complexz(offset, window)
-				} else if ch == 'i' {
-					state = complex
-					goto advance
+				} else if extended {
+					if mask&(number|sign) == number|sign {
+						return s.complex(offset, window, false, s.numberz)
+					} else if ch == 'i' {
+						state = complex
+
+						goto advance
+					}
 				}
+
 				return EOF, 0, 0
 			} else if state == digit3 {
 				if mask&(number|digit) == number|digit {
 					goto advance
 				} else if mask&(number|sign) == number|sign {
-					return s.complexz(offset, window)
-				} else if ch == 'i' {
+					return s.complex(offset, window, false, s.numberz)
+				} else if ch == 'i' && extended {
 					state = complex
+
 					goto advance
 				}
+
 				return EOF, 0, 0
 			} else if state == hex1 {
 				if mask&hex != 0 && (kind == 0 ||
 					kind == number || ch == 'f') {
 					goto advance
 				}
+
 				return EOF, 0, 0
+			} else if state == complex {
+				return s.complex(offset, window, true, s.numberz)
 			} else if state == zero {
 				if ch == '.' {
 					state = dot1
+
 					goto advance
 				} else if mask&(base|exp) == exp {
 					state = exp1
+
 					goto advance
 				} else if mask&(base|hexs) == hexs {
 					state = hex1
+
 					goto advance
-				} else if mask&(number|sign) == number|sign {
-					return s.complexz(offset, window)
-				} else if ch == 'i' {
-					state = complex
-					goto advance
+				} else if extended {
+					if mask&(number|sign) == number|sign {
+						return s.complex(offset, window, false, s.numberz)
+					} else if ch == 'i' {
+						state = complex
+
+						goto advance
+					}
 				}
+
 				return EOF, 0, 0
 			} else if state == begin {
 				if mask&(number|digit) == number|digit {
@@ -1594,11 +1787,13 @@ next:
 					} else {
 						state = digit1
 					}
+
 					goto advance
 				} else if mask&(number|sign) == number|sign {
 					goto advance
 				} else if ch == '.' {
 					state = dot1
+
 					goto advance
 				} else if ch == 'I' {
 					offset, skip := s.token(offset+1, _Infinity_[1:])
@@ -1610,31 +1805,40 @@ next:
 					if offset != 0 {
 						return NaN, offset, skip
 					}
-				} else if ch == 'i' {
+				} else if ch == 'i' && extended {
 					state = complex
+
 					goto advance
 				}
+
 				return EOF, 0, 0
 			} else if state == dot1 {
 				if mask&(number|digit) == number|digit {
 					state = digit2
+
 					goto advance
 				}
+
 				return EOF, 0, 0
 			} else if state == exp1 {
 				if mask&(number|sign) == number|sign {
 					state = expsign1
+
 					goto advance
 				} else if mask&(number|digit) == number|digit {
 					state = digit3
+
 					goto advance
 				}
+
 				return EOF, 0, 0
 			} else if state == expsign1 {
 				if mask&(number|digit) == number|digit {
 					state = digit3
+
 					goto advance
 				}
+
 				return EOF, 0, 0
 			}
 
@@ -1660,24 +1864,6 @@ next:
 
 		window = s.reader.window()
 	}
-}
-
-// complexz is a helper for numberz, handling the imaginary part recursion.
-func (s *Scanner) complexz(
-	offset int, window []byte,
-) (byte, int, int) {
-	if s.imaginary {
-		return EOF, 0, 0
-	}
-
-	s.imaginary = true
-	ch, offset, skip := s.numberz(offset, window)
-	s.imaginary = false
-
-	if ch == Complex {
-		return Complex, offset, skip
-	}
-	return EOF, 0, 0
 }
 
 // escapes maps JSON/JSON5 escape characters to their decoded byte values. A
@@ -1707,7 +1893,7 @@ var escapes = [256]byte{
 // occupies ≥ 2 bytes in the input and decodes to ≤ 4 bytes of output (UTF-8),
 // so the write pointer can never overtake the offset pointer. The returned
 // slice is a direct sub-slice of the window buffer (zero allocation).
-func (s *Scanner) quoted(quote byte) (byte, []byte, int) {
+func (s *scanner) quoted(quote byte) (byte, []byte, int) {
 	window := s.reader.window()
 	offset, write := 1, 1
 
@@ -1717,6 +1903,7 @@ func (s *Scanner) quoted(quote byte) (byte, []byte, int) {
 				return EOF, nil, 0
 			}
 			window = s.reader.window()
+
 			continue
 		}
 
@@ -1725,7 +1912,7 @@ func (s *Scanner) quoted(quote byte) (byte, []byte, int) {
 
 		switch char {
 		case quote:
-			return String, window[1:write], offset
+			return quote, window[1:write], offset
 
 		case Escape:
 			for offset >= len(window) {
@@ -1778,7 +1965,7 @@ func (s *Scanner) quoted(quote byte) (byte, []byte, int) {
 // location in the stream, without the need to manually track newlines and
 // escapes in the stream. However, this comes with a performance cost of
 // roughly 20%.
-func (s *Scanner) quoted_(quote byte) (byte, []byte, int, int, int) {
+func (s *scanner) quoted_(quote byte) (byte, []byte, int, int, int) {
 	window := s.reader.window()
 	offset, write, line, char := 1, 1, 0, 1
 
@@ -1788,6 +1975,7 @@ func (s *Scanner) quoted_(quote byte) (byte, []byte, int, int, int) {
 				return EOF, nil, 0, 0, 0
 			}
 			window = s.reader.window()
+
 			continue
 		}
 
@@ -1797,7 +1985,7 @@ func (s *Scanner) quoted_(quote byte) (byte, []byte, int, int, int) {
 
 		switch ch {
 		case quote:
-			return String, window[1:write], offset, line, char
+			return quote, window[1:write], offset, line, char
 
 		case Escape:
 			for offset >= len(window) {
@@ -1862,7 +2050,7 @@ func (s *Scanner) quoted_(quote byte) (byte, []byte, int, int, int) {
 // must be stripped by the caller before invoking relaxed.
 //
 // FIXME: check white space and comment handling in relaxed mode.
-func (s *Scanner) relaxed() (byte, []byte, int) {
+func (s *scanner) relaxed() (byte, []byte, int) {
 	window := s.reader.window()
 	offset, write, last := 0, 0, 0
 
@@ -1879,12 +2067,14 @@ loop:
 			copy(window[write:write+bytes], window[offset:offset+bytes])
 			write += bytes
 			offset += bytes
+
 			continue
 		} else if extend {
 			if s.reader.extend() == 0 {
 				return EOF, nil, 0
 			}
 			window = s.reader.window()
+
 			continue
 		}
 
@@ -1938,7 +2128,7 @@ loop:
 		}
 	}
 
-	return String, window[:last], offset
+	return Plain, window[:last], offset
 }
 
 // relaxed_ is a non-standard extension that allows to parse unquoted strings,
@@ -1964,7 +2154,7 @@ loop:
 // location in the stream, without the need to manually track newlines and
 // escapes in the stream. However, this comes with a performance cost of
 // roughly 20%.
-func (s *Scanner) relaxed_() (byte, []byte, int, int, int) {
+func (s *scanner) relaxed_() (byte, []byte, int, int, int) {
 	window := s.reader.window()
 	offset, write, line, char, last := 0, 0, 0, 0, 0
 
@@ -1987,12 +2177,14 @@ loop:
 			} else {
 				char++
 			}
+
 			continue
 		} else if extend {
 			if s.reader.extend() == 0 {
 				return EOF, nil, 0, 0, 0
 			}
 			window = s.reader.window()
+
 			continue
 		}
 
@@ -2053,14 +2245,14 @@ loop:
 		}
 	}
 
-	return String, window[:last], offset, line, char
+	return Plain, window[:last], offset, line, char
 }
 
 // unicode decodes a \uXXXX escape sequence (and the optional surrogate pairs
 // \uXXXX\uXXXX) from the reader window starting at offset. It extends the
 // window as needed and returns the decoded rune, the updated offset, the
 // (possibly refreshed) window, and an ok flag.
-func (s *Scanner) unicode(
+func (s *scanner) unicode(
 	offset int, window []byte,
 ) (rune, int, []byte, bool) {
 	for offset+4 > len(window) {

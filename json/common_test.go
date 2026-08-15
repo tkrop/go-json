@@ -6,60 +6,115 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"strconv"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tkrop/go-testing/test"
 )
 
-// token represents a scanned token with its type and value.
-type token struct {
+// Mode extensions for testing purposes.
+const (
+	// Mock mode enables testing using the mock scanner.
+	Mock Mode = 0x0004
+)
+
+// Token represents a scanned Token with its type and value.
+type Token struct {
+	ctx   ScanContext
 	typ   byte
 	token string
 }
 
-// testReader is an `io.Reader` that reads small chunks of data.
-type testReader struct {
-	reader io.Reader
-	modulo int
-	num    int
+// Wrapper wraps a `Scanner` and adds test assertions for token sequences.
+type Wrapper struct {
+	Scanner
+	t      test.Test
+	tokens []Token
+	pos    []Position
+	tindex int
+	pindex int
 }
 
-// NewTestReader returns a new `testReader` that reads from reader in small chunks
-// of data using modulo.
-func NewTestReader(reader io.Reader, modulo int) io.Reader {
-	return &testReader{reader: reader, modulo: modulo, num: 0}
-}
-
-// next returns the next chunk size.
-func (r *testReader) next() int {
-	r.num = r.num + 7
-	return r.num%(r.modulo) + 1
-}
-
-// Read reads up to len(buf) bytes into buf.
-func (r *testReader) Read(buf []byte) (int, error) {
-	return r.reader.Read(buf[:r.min(r.next(), len(buf))])
-}
-
-// min returns the minimum of a and b.
-func (*testReader) min(a, b int) int {
-	if a < b {
-		return a
+// NewWrapper creates a new Wrapper instance that wraps the given scanner and
+// adds test assertions for token sequences and positions.
+func NewWrapper(
+	scanner Scanner, t test.Test,
+	tokens []Token, pos []Position,
+) *Wrapper {
+	return &Wrapper{
+		Scanner: scanner,
+		t:       t,
+		tokens:  tokens,
+		pos:     pos,
 	}
-	return b
 }
 
-// fileParams holds the parameters for a file test case, including the path to
-// the file, the expected number of tokens, the expected number of raw bytes,
-// and the expected number of space characters.
+// Next wraps the `Next` method of the scanner and asserts the expected token
+// sequence.
+func (s *Wrapper) Next(ctx ScanContext) (byte, []byte) {
+	typ, token := s.Scanner.Next(ctx)
+	assert.Equal(s.t, s.tokens[s.tindex], Token{
+		ctx: ctx, typ: typ, token: string(token),
+	}, "token mismatch at index %d", s.tindex)
+	s.tindex++
+
+	return typ, token
+}
+
+// Position wraps the `Position` method of the `Scanner` and asserts the
+// expected position.
+func (s *Wrapper) Position() Position {
+	pos := s.Scanner.Position()
+	if s.pindex < len(s.pos) {
+		assert.Equal(s.t, s.pos[s.pindex], pos,
+			"position mismatch at index %d", s.pindex)
+	} else if len(s.pos) > 0 {
+		assert.Fail(s.t, "unexpected position call at index %d", s.pindex)
+	}
+	s.pindex++
+
+	return pos
+}
+
+func (s *Wrapper) Validate() {
+	assert.Equal(s.t, len(s.tokens), s.tindex, "not all tokens were consumed")
+	assert.Equal(s.t, len(s.pos), s.pindex, "not all positions were consumed")
+}
+
+// copyShallow creates a shallow copy of the given value if it is a non-nil
+// pointer. For maps, it initializes a new empty map. Otherwise, it returns
+// the original value.
+func copyShallow(value any) any {
+	if value == nil {
+		return nil
+	}
+
+	val := reflect.ValueOf(value)
+	if val.Kind() != reflect.Pointer || val.IsNil() {
+		return value
+	}
+
+	copy := reflect.New(val.Type().Elem())
+	if copy.Elem().Kind() == reflect.Map {
+		copy.Elem().Set(reflect.MakeMap(copy.Elem().Type()))
+	}
+
+	return copy.Interface()
+}
+
+// fileParams holds scanner token, delimiter, byte, and scanner whitespace
+// counts for a fixture file.
 type fileParams struct {
-	path   string
+	name   string
 	chars  int
 	tokens int
-	space  int
+	delims int
+	spaces int
 }
 
 // fileTestCase is a map of file test cases, where each key is the name of the
@@ -69,38 +124,211 @@ type fileParams struct {
 var fileTestCase = map[string]fileParams{
 	// from https://github.com/miloyip/nativejson-benchmark
 	"canada": {
-		path: "canada", tokens: 334373, chars: 2251003, space: 33,
+		name:   "canada",
+		tokens: 334373, delims: 111137, chars: 2251003, spaces: 33,
 	},
 	"catalog": {
-		path: "catalog", tokens: 135990, chars: 447089, space: 1226905,
+		name:   "catalog",
+		tokens: 135990, delims: 50955, chars: 447089, spaces: 1226905,
 	},
 	"twitter": {
-		path: "twitter", tokens: 55263, chars: 429480, space: 164608,
+		name:   "twitter",
+		tokens: 55263, delims: 25690, chars: 429480, spaces: 164608,
 	},
 	"code": {
-		path: "code", tokens: 396293, chars: 1735570, space: 3,
+		name:   "code",
+		tokens: 396293, delims: 178586, chars: 1735570,
 	},
 
 	// from https://raw.githubusercontent.com/mailru/easyjson/master/benchmark/example.json
 	"example": {
-		path: "example", tokens: 1297, chars: 8058, space: 4122,
+		name:   "example",
+		tokens: 1297, delims: 587, chars: 8058, spaces: 4122,
 	},
 
 	// from https://github.com/ultrajson/ultrajson/blob/master/tests/sample.json
 	"sample": {
-		path: "sample", tokens: 8677, chars: 160587, space: 518187,
+		name:   "sample",
+		tokens: 8677, delims: 3401, chars: 160587, spaces: 518187,
 	},
 }
 
 // getFixtureReader returns a `Reader` for the contents of path.
-func getFixtureReader(t test.Reporter, path string) *bytes.Reader {
-	file := test.Must(os.Open(filepath.Join("fixture", path+".json.gz")))
+func getFixtureReader(t test.Reporter, name string) *bytes.Reader {
+	file := test.Must(os.Open(filepath.Join("fixture", name+".json.gz")))
 	unzip := test.Must(gzip.NewReader(file))
 	buffer := test.Must(io.ReadAll(unzip))
 	require.NoError(t, unzip.Close())
 	require.NoError(t, file.Close())
 
 	return bytes.NewReader(buffer)
+}
+
+// countFile counts the number of delimiters, characters, and spaces in a JSON file
+// using the provided scanner. It returns the counts for delimiters, characters,
+// and spaces. The function stops counting when it reaches the end of the file (EOF).
+func countFile(scanner *scanner) (delims, chars, spaces int) {
+	for {
+		typ, token := scanner.Next_(RootValue)
+		switch typ {
+		case EOF:
+			return delims, chars, spaces
+		case Space:
+			spaces += utf8.RuneCount(token)
+		default:
+			chars += len(token)
+			if typ == Comma || typ == Colon {
+				delims++
+			}
+		}
+	}
+}
+
+// TestFiles tests the counting of delimiters, characters, and spaces in JSON files
+// using the countFile function and the ScanTracker.
+func TestFiles(t *testing.T) {
+	test.Map(t, fileTestCase).
+		Run(func(t test.Test, param fileParams) {
+			// Given
+			scanner := test.Cast[*scanner](NewScannerSource(
+				getFixtureReader(t, param.name), make([]byte, 0, 8<<10)))
+			scanner.SetMode(Json)
+
+			// When
+			delims, chars, spaces := countFile(scanner)
+
+			// Then
+			assert.Equal(t, param.delims, delims, "delims")
+			assert.Equal(t, param.chars, chars, "chars")
+			assert.Equal(t, param.spaces, spaces, "spaces")
+			assert.Equal(t, io.EOF, scanner.Error(), "error")
+		})
+}
+
+// TestReader is a test helper that reads the entire contents of a file and
+// returns it as a byte slice.
+
+// TestReader is an `io.Reader` that reads small chunks of data.
+type TestReader struct {
+	reader io.Reader
+	modulo int
+	num    int
+}
+
+// NewTestReader returns a new `testReader` that reads from reader in small chunks
+// of data using modulo.
+func NewTestReader(reader io.Reader, modulo int) io.Reader {
+	return &TestReader{reader: reader, modulo: modulo, num: 0}
+}
+
+// next returns the next chunk size.
+func (r *TestReader) next() int {
+	r.num = r.num + 7
+
+	return r.num%r.modulo + 1
+}
+
+// Read reads up to len(buf) bytes into buf.
+func (r *TestReader) Read(buf []byte) (int, error) {
+	return r.reader.Read(buf[:r.min(r.next(), len(buf))])
+}
+
+// min returns the minimum of a and b.
+func (*TestReader) min(a, b int) int {
+	if a < b {
+		return a
+	}
+
+	return b
+}
+
+type normcomplexParams struct {
+	input  string
+	output string
+	expect complex128
+	error  error
+}
+
+var normcomplexTestCases = map[string]normcomplexParams{
+	"real-first": {
+		input: "1+2i", output: "1+2i", expect: 1 + 2i,
+	},
+	"real-first-imaginary-unit": {
+		input: "1+i", output: "1+1i", expect: 1 + 1i,
+	},
+	"real-first-negative-unit": {
+		input: "-1-i", output: "-1-1i", expect: -1 - 1i,
+	},
+	"imaginary-unit": {
+		input: "i", output: "1i", expect: 1i,
+	},
+	"negative-imaginary-unit": {
+		input: "-i", output: "-1i", expect: -1i,
+	},
+	"imaginary-first": {
+		input: "2i+1", output: "1+2i", expect: 1 + 2i,
+	},
+	"imaginary-first-unit": {
+		input: "i+1", output: "1+1i", expect: 1 + 1i,
+	},
+	"imaginary-first-negative-real": {
+		input: "2i-1", output: "-1+2i", expect: -1 + 2i,
+	},
+	"imaginary-first-negative-imaginary": {
+		input: "-2i+1", output: "1-2i", expect: 1 - 2i,
+	},
+	"imaginary-first-negative-unit": {
+		input: "-i+1", output: "1-1i", expect: 1 - 1i,
+	},
+	"imaginary-first-both-negative": {
+		input: "-2i-1", output: "-1-2i", expect: -1 - 2i,
+	},
+	"imaginary-first-exponents": {
+		input: "1.2e-3i+4e+2", output: "4e+2+1.2e-3i",
+		expect: 400 + 0.0012i,
+	},
+	"real-first-exponents": {
+		input: "1e-2+3e+4i", output: "1e-2+3e+4i",
+		expect: 0.01 + 30000i,
+	},
+	"invalid-leading-i": {
+		input: "invalid", output: "nvalid+1i",
+		error: &strconv.NumError{
+			Func: "ParseComplex", Num: "nvalid+1i", Err: strconv.ErrSyntax,
+		},
+	},
+	"invalid-imaginary-suffix": {
+		input: "1+2ix", output: "x+1+2i",
+		error: &strconv.NumError{
+			Func: "ParseComplex", Num: "x+1+2i", Err: strconv.ErrSyntax,
+		},
+	},
+	"invalid-extra-component": {
+		input: "1+2i+3", output: "3+1+2i",
+		error: &strconv.NumError{
+			Func: "ParseComplex", Num: "3+1+2i", Err: strconv.ErrSyntax,
+		},
+	},
+	"invalid-missing-real": {
+		input: "1i+", output: "1i+",
+		error: &strconv.NumError{
+			Func: "ParseComplex", Num: "1i+", Err: strconv.ErrSyntax,
+		},
+	},
+}
+
+func TestNormcomplex(t *testing.T) {
+	test.Map(t, normcomplexTestCases).
+		Run(func(t test.Test, param normcomplexParams) {
+			// When
+			output := normcomplex(param.input)
+			expect, err := strconv.ParseComplex(output, 128)
+
+			// Then
+			assert.Equal(t, param.output, output)
+			assert.Equal(t, param.expect, expect)
+			assert.Equal(t, param.error, err)
+		})
 }
 
 //
