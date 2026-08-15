@@ -4,10 +4,10 @@ go 1.26.5
 
 require (
 	github.com/adhocore/jsonc v0.10.0
-	github.com/pkg/json v0.0.0-20231102085813-703c45db51c1
+	github.com/pkg/json v0.0.0-20260504031610-00e60cb5517f
 	github.com/stretchr/testify v1.11.1
 	github.com/titanous/json5 v1.0.0
-	github.com/tkrop/go-testing v0.3.0
+	github.com/tkrop/go-testing v0.4.1
 	github.com/yosuke-furukawa/json5 v0.1.1
 	gopkg.in/yaml.v3 v3.0.1
 )

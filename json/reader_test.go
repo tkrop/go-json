@@ -28,14 +28,14 @@ func NewState(offset, bytes, lines, chars int) state {
 	}
 }
 
-// NewReaderState creates a Reader with the given buffer, growing mode, state, and
+// NewReaderState creates a Reader with the given buffer, mode, state, and
 // error.
 func NewReaderState(
-	buffer []byte, breath bool, new, min int, state state, err error,
+	buffer []byte, mode Mode, new, min int, state state, err error,
 ) Reader {
 	return Reader{
 		buffer: buffer,
-		breath: breath,
+		mode:   mode,
 		new:    new,
 		min:    min,
 		offset: state.offset,
@@ -160,7 +160,7 @@ func TestRelease(t *testing.T) {
 			}
 
 			reader := NewReaderState([]byte(data),
-				true, 4, 8, param.setup, nil)
+				Evict, 4, 8, param.setup, nil)
 
 			// When
 			for _, s := range param.inputs {
@@ -206,7 +206,7 @@ func TestAdvance(t *testing.T) {
 	test.Map(t, advanceTestCases).
 		Run(func(t test.Test, param advanceParams) {
 			// Given
-			reader := NewReaderState(nil, true, 4, 8, param.setup, nil)
+			reader := NewReaderState(nil, Evict, 4, 8, param.setup, nil)
 
 			// When
 			reader.advance_(param.num, param.lines, param.chars)
@@ -245,7 +245,7 @@ func TestAdvanceOffset(t *testing.T) {
 	test.Map(t, advanceOffsetTestCases).
 		Run(func(t test.Test, param advanceOffsetParams) {
 			// Given
-			reader := NewReaderState(nil, true, 4, 8, param.setup, nil)
+			reader := NewReaderState(nil, Evict, 4, 8, param.setup, nil)
 
 			// When
 			reader.advance(param.offset)
@@ -290,7 +290,7 @@ func TestPosition(t *testing.T) {
 		Run(func(t test.Test, param positionParams) {
 			// Given
 			reader := NewReaderState([]byte(param.data),
-				true, 4, 8, param.setup, nil)
+				Evict, 4, 8, param.setup, nil)
 
 			// When
 			for _, num := range param.release {
@@ -320,26 +320,26 @@ type extendParams struct {
 var extendTestCases = map[string]extendParams{
 	"existing-error": {
 		reader: NewReaderState([]byte("hello"),
-			true, 4, 8, NewState(2, 11, 3, 7), io.EOF),
+			Evict, 4, 8, NewState(2, 11, 3, 7), io.EOF),
 		expect: NewReaderState([]byte("hello"),
-			true, 4, 8, NewState(2, 11, 3, 7), io.EOF),
+			Evict, 4, 8, NewState(2, 11, 3, 7), io.EOF),
 	},
 	"extend-buffer": {
 		reader: NewReaderState([]byte("ab"),
-			true, 4, 8, NewState(0, 0, 0, 0), nil),
+			Evict, 4, 8, NewState(0, 0, 0, 0), nil),
 		steps: []step{{data: "xy"}},
 		expect: NewReaderState(
 			append(make([]byte, 0, 4), []byte("abxy")...),
-			true, 4, 8, NewState(0, 0, 0, 0), nil),
+			Evict, 4, 8, NewState(0, 0, 0, 0), nil),
 		num: 2,
 	},
 	"reset-empty-window": {
 		reader: NewReaderState(fillBuffer(3, 3, 'x'),
-			true, 4, 8, NewState(3, 9, 1, 4), nil),
+			Evict, 4, 8, NewState(3, 9, 1, 4), nil),
 		steps: []step{{data: "hi", err: io.EOF}},
 		expect: NewReaderState(
 			append(make([]byte, 0, 2), []byte("hi")...),
-			true, 4, 8, NewState(0, 9, 1, 4), io.EOF),
+			Evict, 4, 8, NewState(0, 9, 1, 4), io.EOF),
 		num: 2,
 	},
 	"compact-before-read": {
@@ -347,11 +347,11 @@ var extendTestCases = map[string]extendParams{
 			buffer := fillBuffer(9, 16, 'x')
 			copy(buffer[6:], []byte("abc"))
 			return buffer
-		}(), true, 4, 8, NewState(6, 4, 0, 4), nil),
+		}(), Evict, 4, 8, NewState(6, 4, 0, 4), nil),
 		steps: []step{{data: "yz"}},
 		expect: NewReaderState(func() []byte {
 			return []byte("abcyz")
-		}(), true, 4, 8, NewState(0, 4, 0, 4), nil),
+		}(), Evict, 4, 8, NewState(0, 4, 0, 4), nil),
 		num: 2,
 	},
 	"grow-before-read": {
@@ -359,29 +359,29 @@ var extendTestCases = map[string]extendParams{
 			buffer := fillBuffer(9, 13, 'x')
 			copy(buffer[1:], []byte("mno"))
 			return buffer
-		}(), true, 4, 8, NewState(1, 6, 1, 2), nil),
+		}(), Evict, 4, 8, NewState(1, 6, 1, 2), nil),
 		steps: []step{{data: "z", err: io.EOF}},
 		expect: NewReaderState(func() []byte {
 			return []byte("mnoxxxxxz")
-		}(), true, 4, 8, NewState(0, 6, 1, 2), io.EOF),
+		}(), Evict, 4, 8, NewState(0, 6, 1, 2), io.EOF),
 		num: 1,
 	},
 	"shrink-mode-compacts-window": {
 		reader: NewReaderState([]byte("prefixtoken"),
-			true, 4, 8, NewState(6, 0, 0, 0), nil),
+			Evict, 4, 8, NewState(6, 0, 0, 0), nil),
 		steps: []step{{data: "X", err: io.EOF}},
 		expect: NewReaderState([]byte("tokenX"),
-			true, 4, 8, NewState(0, 0, 0, 0), io.EOF),
+			Evict, 4, 8, NewState(0, 0, 0, 0), io.EOF),
 		num: 1,
 	},
 	"grow-only-mode-keeps-prefix": {
 		reader: NewReaderState(
 			append(make([]byte, 0, 20), []byte("prefixtoken")...),
-			false, 4, 8, NewState(6, 0, 0, 0), nil),
+			Retain, 4, 8, NewState(6, 0, 0, 0), nil),
 		steps: []step{{data: "X", err: io.EOF}},
 		expect: NewReaderState(func() []byte {
 			return []byte("prefixtokenX")
-		}(), false, 4, 8, NewState(6, 0, 0, 0), io.EOF),
+		}(), Retain, 4, 8, NewState(6, 0, 0, 0), io.EOF),
 		num: 1,
 	},
 	"grow-only-mode-grow-copies-full-buffer": {
@@ -389,14 +389,14 @@ var extendTestCases = map[string]extendParams{
 			buffer := fillBuffer(9, 13, 'x')
 			copy(buffer[1:], []byte("mno"))
 			return buffer
-		}(), false, 4, 8, NewState(1, 2, 0, 2), nil),
+		}(), Retain, 4, 8, NewState(1, 2, 0, 2), nil),
 		steps: []step{{data: "z", err: io.EOF}},
 		expect: NewReaderState(func() []byte {
 			buffer := fillBuffer(26, 26, 0)
 			copy(buffer, []byte("xmnoxxxxx"))
 			return buffer
 		}(),
-			false, 4, 8, NewState(1, 2, 0, 2), io.EOF),
+			Retain, 4, 8, NewState(1, 2, 0, 2), io.EOF),
 		num: 0,
 	},
 }
@@ -441,7 +441,7 @@ type skipParams struct {
 var skipTestCases = map[string]skipParams{
 	"all": {
 		reader: NewReaderState(make([]byte, 0, 64),
-			false, 4, 8, NewState(0, 0, 0, 0), nil),
+			Retain, 4, 8, NewState(0, 0, 0, 0), nil),
 		steps:  []step{{data: " \t\n", err: io.EOF}},
 		skip:   3,
 		remain: "",
@@ -450,7 +450,7 @@ var skipTestCases = map[string]skipParams{
 	},
 	"none": {
 		reader: NewReaderState([]byte("abc"),
-			false, 4, 8, NewState(0, 0, 0, 0), nil),
+			Retain, 4, 8, NewState(0, 0, 0, 0), nil),
 		skip:   0,
 		remain: "abc",
 		state:  Position{Byte: 0, Line: 0, Char: 0},
@@ -458,7 +458,7 @@ var skipTestCases = map[string]skipParams{
 	},
 	"offset": {
 		reader: NewReaderState([]byte("zz \nabc"),
-			false, 4, 8, NewState(2, 5, 1, 2), nil),
+			Retain, 4, 8, NewState(2, 5, 1, 2), nil),
 		skip:   2,
 		remain: "abc",
 		state:  Position{Byte: 7, Line: 2, Char: 0},
@@ -466,7 +466,7 @@ var skipTestCases = map[string]skipParams{
 	},
 	"spaces": {
 		reader: NewReaderState(make([]byte, 0, 64),
-			false, 4, 8, NewState(0, 0, 0, 0), nil),
+			Retain, 4, 8, NewState(0, 0, 0, 0), nil),
 		steps:  []step{{data: " \t\nabc", err: io.EOF}},
 		skip:   3,
 		remain: "abc",
@@ -475,7 +475,7 @@ var skipTestCases = map[string]skipParams{
 	},
 	"unicodes": {
 		reader: NewReaderState(make([]byte, 0, 64),
-			false, 4, 8, NewState(0, 0, 0, 0), nil),
+			Retain, 4, 8, NewState(0, 0, 0, 0), nil),
 		steps:  []step{{data: "\xE2\x80"}, {data: "\xA8x", err: io.EOF}},
 		skip:   3,
 		remain: "x",
@@ -484,7 +484,7 @@ var skipTestCases = map[string]skipParams{
 	},
 	"mixed": {
 		reader: NewReaderState(make([]byte, 0, 64),
-			false, 4, 8, NewState(0, 0, 0, 0), nil),
+			Retain, 4, 8, NewState(0, 0, 0, 0), nil),
 		steps: []step{
 			{data: " \xC2\xA0\nabc", err: io.EOF},
 		},
@@ -533,21 +533,21 @@ type compareParams struct {
 var compareTestCases = map[string]compareParams{
 	"match-buffer": {
 		reader: NewReaderState([]byte("prefix"),
-			false, 4, 8, NewState(0, 2, 1, 3), nil),
+			Retain, 4, 8, NewState(0, 2, 1, 3), nil),
 		expect: []byte("pre"),
 		match:  true,
 		state:  Position{Byte: 2, Line: 1, Char: 3},
 	},
 	"mismatch-buffer": {
 		reader: NewReaderState([]byte("prefix"),
-			false, 4, 8, NewState(0, 2, 1, 3), nil),
+			Retain, 4, 8, NewState(0, 2, 1, 3), nil),
 		expect: []byte("pro"),
 		match:  false,
 		state:  Position{Byte: 2, Line: 1, Char: 3},
 	},
 	"match-extend": {
 		reader: NewReaderState(make([]byte, 0, 64),
-			false, 4, 8, NewState(0, 0, 0, 0), nil),
+			Retain, 4, 8, NewState(0, 0, 0, 0), nil),
 		steps:  []step{{data: "ab"}, {data: "cd", err: io.EOF}},
 		expect: []byte("abcd"),
 		match:  true,
@@ -556,7 +556,7 @@ var compareTestCases = map[string]compareParams{
 	},
 	"short-eof": {
 		reader: NewReaderState(make([]byte, 0, 64),
-			false, 4, 8, NewState(0, 0, 0, 0), nil),
+			Retain, 4, 8, NewState(0, 0, 0, 0), nil),
 		steps:  []step{{data: "ab", err: io.EOF}},
 		expect: []byte("abc"),
 		match:  false,
@@ -601,7 +601,7 @@ type accessParams struct {
 var accessTestCases = map[string]accessParams{
 	"buffer-hit": {
 		reader: NewReaderState([]byte("abc"),
-			false, 4, 8, NewState(1, 2, 3, 4), nil),
+			Retain, 4, 8, NewState(1, 2, 3, 4), nil),
 		offset: 0,
 		expect: 'b',
 		ok:     true,
@@ -610,7 +610,7 @@ var accessTestCases = map[string]accessParams{
 	},
 	"extend-hit": {
 		reader: NewReaderState(make([]byte, 0, 64),
-			false, 4, 8, NewState(0, 0, 0, 0), nil),
+			Retain, 4, 8, NewState(0, 0, 0, 0), nil),
 		steps:  []step{{data: "x", err: io.EOF}},
 		offset: 0,
 		expect: 'x',
@@ -620,7 +620,7 @@ var accessTestCases = map[string]accessParams{
 	},
 	"eof": {
 		reader: NewReaderState(make([]byte, 0, 64),
-			false, 4, 8, NewState(0, 0, 0, 0), nil),
+			Retain, 4, 8, NewState(0, 0, 0, 0), nil),
 		steps:  []step{{err: io.EOF}},
 		offset: 0,
 		expect: EOF,
@@ -630,7 +630,7 @@ var accessTestCases = map[string]accessParams{
 	},
 	"buffer-hit-offset": {
 		reader: NewReaderState([]byte("abc"),
-			false, 4, 8, NewState(0, 2, 1, 5), nil),
+			Retain, 4, 8, NewState(0, 2, 1, 5), nil),
 		offset: 2,
 		expect: 'c',
 		ok:     true,
@@ -639,7 +639,7 @@ var accessTestCases = map[string]accessParams{
 	},
 	"buffer-hit-with-reader-offset": {
 		reader: NewReaderState([]byte("zzab"),
-			false, 4, 8, NewState(2, 4, 0, 4), nil),
+			Retain, 4, 8, NewState(2, 4, 0, 4), nil),
 		offset: 1,
 		expect: 'b',
 		ok:     true,
@@ -648,7 +648,7 @@ var accessTestCases = map[string]accessParams{
 	},
 	"extend-hit-offset": {
 		reader: NewReaderState(make([]byte, 0, 64),
-			false, 4, 8, NewState(0, 0, 0, 0), nil),
+			Retain, 4, 8, NewState(0, 0, 0, 0), nil),
 		steps:  []step{{data: "ab"}, {data: "c", err: io.EOF}},
 		offset: 2,
 		expect: 'c',
@@ -658,7 +658,7 @@ var accessTestCases = map[string]accessParams{
 	},
 	"eof-short": {
 		reader: NewReaderState(make([]byte, 0, 64),
-			false, 4, 8, NewState(0, 0, 0, 0), nil),
+			Retain, 4, 8, NewState(0, 0, 0, 0), nil),
 		steps:  []step{{data: "ab", err: io.EOF}},
 		offset: 3,
 		expect: EOF,

@@ -71,6 +71,9 @@ func (e *DecodeError) Error() string {
 type Decoder struct {
 	// The scanner used to tokenize the input.
 	scanner Scanner
+	// The mode used for decoding.
+	mode Mode
+
 	// The stack to keep track of whether we are pushing a new object or array.
 	stack []bool
 	// The current state function.
@@ -88,9 +91,18 @@ func NewDecoderBuffer(reader io.Reader, buffer []byte) *Decoder {
 	return &Decoder{
 		scanner: Scanner{
 			reader: *NewReader(buffer[:0], reader),
+			mode:   Relaxed | Extended,
 		},
+		mode:  Relaxed | Extended,
 		state: (*Decoder).stateValue,
 	}
+}
+
+// Mode sets the mode used for reading, scanning, and decoding.
+func (d *Decoder) Mode(mode Mode) *Decoder {
+	d.scanner.Mode(mode)
+	d.mode = mode
+	return d
 }
 
 //
@@ -227,7 +239,7 @@ func (d *Decoder) Token() (json.Token, error) {
 
 // stateObjectKey is the state function for parsing the key of an object.
 func (d *Decoder) stateObjectKey() (byte, []byte, error) {
-	typ, token := d.scanner.Next()
+	typ, token := d.scanner.Next(ObjectKey)
 	if typ == EOF {
 		return 0, nil, io.ErrUnexpectedEOF
 	}
@@ -256,7 +268,7 @@ func (d *Decoder) stateObjectKey() (byte, []byte, error) {
 // stateObjectColon is the state function for parsing the colon after a string
 // key in an object.
 func (d *Decoder) stateObjectColon() (byte, []byte, error) {
-	typ, token := d.scanner.Next()
+	typ, token := d.scanner.Next(ObjectValue)
 	if typ == EOF {
 		return 0, nil, io.ErrUnexpectedEOF
 	}
@@ -274,7 +286,7 @@ func (d *Decoder) stateObjectColon() (byte, []byte, error) {
 // stateObjectValue is the state function for parsing the value after a colon
 // in an object.
 func (d *Decoder) stateObjectValue() (byte, []byte, error) {
-	typ, token := d.scanner.Next()
+	typ, token := d.scanner.Next(ObjectValue)
 	if typ == EOF {
 		return 0, nil, io.ErrUnexpectedEOF
 	}
@@ -297,7 +309,7 @@ func (d *Decoder) stateObjectValue() (byte, []byte, error) {
 // stateObjectComma is the state function for parsing the comma after a value
 // in an object.
 func (d *Decoder) stateObjectComma() (byte, []byte, error) {
-	typ, token := d.scanner.Next()
+	typ, token := d.scanner.Next(ObjectKey)
 	if typ == EOF {
 		return 0, nil, io.ErrUnexpectedEOF
 	}
@@ -324,7 +336,7 @@ func (d *Decoder) stateObjectComma() (byte, []byte, error) {
 
 // stateArrayValue is the state function for parsing a value in an array.
 func (d *Decoder) stateArrayValue() (byte, []byte, error) {
-	typ, token := d.scanner.Next()
+	typ, token := d.scanner.Next(ArrayValue)
 	if typ == EOF {
 		return 0, nil, io.ErrUnexpectedEOF
 	}
@@ -360,7 +372,7 @@ func (d *Decoder) stateArrayValue() (byte, []byte, error) {
 // stateArrayComma is the state function for parsing the comma after a value
 // in an array.
 func (d *Decoder) stateArrayComma() (byte, []byte, error) {
-	typ, token := d.scanner.Next()
+	typ, token := d.scanner.Next(ArrayValue)
 	if typ == EOF {
 		return 0, nil, io.ErrUnexpectedEOF
 	}
@@ -388,7 +400,7 @@ func (d *Decoder) stateArrayComma() (byte, []byte, error) {
 // stateValue is the state function for parsing a value in the root of the JSON
 // document.
 func (d *Decoder) stateValue() (byte, []byte, error) {
-	typ, token := d.scanner.Next()
+	typ, token := d.scanner.Next(RootValue)
 	if typ == EOF {
 		return 0, nil, io.ErrUnexpectedEOF
 	}
@@ -427,6 +439,8 @@ func (*Decoder) stateEnd() (byte, []byte, error) { return EOF, nil, io.EOF }
 func (d *Decoder) Decode(value any) error {
 	rv := reflect.ValueOf(value)
 	switch {
+	case !rv.IsValid():
+		return NewErrDecode("invalid", d.scanner.Position(), EOF, nil, nil, nil)
 	case rv.Kind() != reflect.Ptr:
 		return NewErrDecode("no-pointer", d.scanner.Position(), EOF, nil, rv.Type(), nil)
 	case rv.IsNil():
@@ -439,17 +453,25 @@ func (d *Decoder) Decode(value any) error {
 // decodeValue decodes the next JSON value from the input stream and stores it
 // in the given reflect.Value. The value must be settable. The function is
 // responsible for recursively decoding nested objects and arrays.
-//
-//nolint:gocognit,gocyclo,cyclop,funlen,maintidx // prioritize performance.
-//revive:disable:function-length -- prioritize performance.
-//revive:disable:cognitive-complexity -- prioritize performance.
-//revive:disable:cyclomatic -- prioritize performance.
 func (d *Decoder) decodeValue(v reflect.Value) error {
 	typ, token, err := d.Next()
 	if err != nil {
 		return err
 	}
 
+	return d.decodeValueToken(v, typ, token)
+}
+
+// decodeValueToken decodes a JSON token already read from the input stream
+// and stores it in the given reflect.Value.
+//
+//nolint:gocognit,gocyclo,cyclop,funlen,maintidx // prioritize performance.
+//revive:disable:function-length -- prioritize performance.
+//revive:disable:cognitive-complexity -- prioritize performance.
+//revive:disable:cyclomatic -- prioritize performance.
+func (d *Decoder) decodeValueToken(
+	v reflect.Value, typ byte, token []byte,
+) error {
 	switch typ {
 	case ObjectStart:
 		switch v.Kind() {
@@ -465,6 +487,8 @@ func (d *Decoder) decodeValue(v reflect.Value) error {
 			v.Set(reflect.ValueOf(m))
 		case reflect.Map:
 			return d.decodeMap(v)
+		case reflect.Struct:
+			return d.decodeStruct(v)
 		default:
 			return NewErrDecode("object type",
 				d.scanner.Position(), typ, token, v.Type(), nil)
@@ -483,6 +507,8 @@ func (d *Decoder) decodeValue(v reflect.Value) error {
 				return err
 			}
 			v.Set(reflect.ValueOf(s))
+		case reflect.Slice:
+			return d.decodeSlice(v)
 		default:
 			return NewErrDecode("array type",
 				d.scanner.Position(), typ, token, v.Type(), nil)
@@ -788,6 +814,72 @@ func (d *Decoder) decodeMap(v reflect.Value) error {
 			return err
 		}
 		v.SetMapIndex(kv, value)
+	}
+}
+
+// decodeStruct decodes the next JSON object recursively from the input stream
+// and stores it in the given struct value.
+func (d *Decoder) decodeStruct(v reflect.Value) error {
+	fields := mapFields(v.Type(), d.mode&CaseIgnore != 0)
+
+	for {
+		typ, token, err := d.Next()
+		if err != nil {
+			return err
+		}
+
+		if typ == ObjectEnd {
+			return nil
+		}
+
+		name := string(token)
+		field, ok := fields[name]
+		if !ok {
+			field, ok = fields[foldName(name)]
+			if !ok || field > 0 {
+				// Decode and discard the value for unknown fields.
+				err := d.decodeValue(reflect.ValueOf(new(any)).Elem())
+				if err != nil {
+					return err
+				}
+
+				continue
+			}
+		}
+
+		if field < 0 {
+			field = -field
+		}
+
+		field--
+
+		if err := d.decodeValue(v.Field(field)); err != nil {
+			return err
+		}
+	}
+}
+
+// decodeSlice decodes the next JSON array from the input stream and stores it
+// in the given slice value.
+func (d *Decoder) decodeSlice(v reflect.Value) error {
+	v.SetLen(0)
+
+	for {
+		typ, token, err := d.Next()
+		if err != nil {
+			return err
+		}
+
+		if typ == ArrayEnd {
+			return nil
+		}
+
+		elem := reflect.New(v.Type().Elem()).Elem()
+		if err := d.decodeValueToken(elem, typ, token); err != nil {
+			return err
+		}
+
+		v.Set(reflect.Append(v, elem))
 	}
 }
 
