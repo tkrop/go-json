@@ -17,6 +17,8 @@ import (
 	"github.com/tkrop/go-testing/test"
 )
 
+// FIXME: Improve AI generated test cases.
+
 // benchReader is an interface that combines io.ReadSeeker and a Size method
 // for benchmarking.
 type benchReader interface {
@@ -90,6 +92,7 @@ func TestDecNew(t *testing.T) {
 
 // decDecodeParams holds parameters for TestDecDecode.
 type decDecodeParams struct {
+	mode   Mode
 	input  string
 	output any
 	expect any
@@ -111,135 +114,176 @@ func decError(
 	}
 }
 
+type decErrorStringParams struct {
+	err    *DecodeError
+	expect string
+}
+
+type decStructInternalObject struct {
+	Name string `json:"name"`
+}
+
+var decErrorStringTestCases = map[string]decErrorStringParams{
+	"byte-only-position": {
+		err: &DecodeError{
+			Msg:   "number",
+			Pos:   Position{Byte: 7},
+			Typ:   Integer,
+			Token: "12",
+			Type:  reflect.TypeOf(int(0)),
+		},
+		expect: `decode number [type=int, byte=7, token="12"]`,
+	},
+	"line-and-char-position": {
+		err: &DecodeError{
+			Msg:   "string",
+			Pos:   Position{Byte: 9, Line: 2, Char: 4},
+			Typ:   String,
+			Token: "x",
+			Type:  reflect.TypeOf(""),
+		},
+		expect: `decode string [type=string, byte=9, line=2, char=4, token="x"]`,
+	},
+}
+
 // decDecodeTestCases defines test cases for testing the Decode method of the
 // Decoder.
 var decDecodeTestCases = map[string]decDecodeParams{
 	// Bool targets.
-	"bool-true":  {input: `true`, output: new(bool), expect: test.Ptr(true)},
-	"bool-false": {input: `false`, output: new(bool), expect: test.Ptr(false)},
+	"bool-true": {
+		mode: StrictJson, input: `true`, output: new(bool),
+		expect: test.Ptr(true),
+	},
+	"bool-false": {
+		mode: StrictJson, input: `false`, output: new(bool),
+		expect: test.Ptr(false),
+	},
 	"bool-any-true": {
-		input: `true`, output: test.Ptr[any](false),
+		mode: StrictJson, input: `true`, output: test.Ptr[any](false),
 		expect: test.Ptr[any](true),
 	},
 	"bool-any-false": {
-		input: `false`, output: test.Ptr[any](true),
+		mode: StrictJson, input: `false`, output: test.Ptr[any](true),
 		expect: test.Ptr[any](false),
 	},
 
 	// Null into pointer/map/slice.
 	"null-ptr": {
-		input: `null`, output: test.Ptr(new(int)),
+		mode: StrictJson, input: `null`, output: test.Ptr(new(int)),
 		expect: test.Ptr((*int)(nil)),
 	},
 	"null-map": {
-		input: `null`, output: test.Ptr(map[int]string{}),
+		mode: StrictJson, input: `null`, output: test.Ptr(map[int]string{}),
 		expect: test.Ptr((map[int]string)(nil)),
 	},
 	"null-slice": {
+		mode:  StrictJson,
 		input: `null`, output: test.Ptr([]string{"a"}),
 		expect: test.Ptr(([]string)(nil)),
 	},
 
 	// Numeric targets.
 	"float64-any": {
-		input: `3`, output: new(any),
+		mode: StrictJson, input: `3`, output: new(any),
 		expect: test.Ptr[any](float64(3)),
 	},
 	"float64": {
-		input: `1`, output: new(float64),
+		mode: StrictJson, input: `1`, output: new(float64),
 		expect: test.Ptr(float64(1)),
 	},
 	"float32": {
-		input: `1`, output: new(float32),
+		mode: StrictJson, input: `1`, output: new(float32),
 		expect: test.Ptr(float32(1)),
 	},
 	"int": {
-		input: `1`, output: new(int),
+		mode: StrictJson, input: `1`, output: new(int),
 		expect: test.Ptr(1),
 	},
 	"int64-neg": {
-		input: `-1`, output: new(int64),
+		mode: StrictJson, input: `-1`, output: new(int64),
 		expect: test.Ptr(int64(-1)),
 	},
 	"uint": {
-		input: `1`, output: new(uint),
+		mode: StrictJson, input: `1`, output: new(uint),
 		expect: test.Ptr(uint(1)),
 	},
 
 	// Hex numeric target.
 	"hex-any": {
-		input: `0xFF`, output: new(any),
+		mode: Strict, input: `0xFF`, output: new(any),
 		expect: test.Ptr[any](float64(255)),
 	},
 	"hex-int": {
-		input: `0x10`, output: new(int),
+		mode: Strict, input: `0x10`, output: new(int),
 		expect: test.Ptr(16),
 	},
 	"hex-uint": {
-		input: `0x10`, output: new(uint),
+		mode: Strict, input: `0x10`, output: new(uint),
 		expect: test.Ptr(uint(16)),
 	},
 	"hex-float64": {
-		input: `0x10`, output: new(float64),
+		mode: Strict, input: `0x10`, output: new(float64),
 		expect: test.Ptr(float64(16)),
 	},
 
 	// Complex target.
 	"complex-any": {
-		input: `1+2i`, output: new(any),
+		mode: Extended, input: `1+2i`, output: new(any),
 		expect: test.Ptr[any](complex(1, 2)),
 	},
 	"complex128": {
-		input: `3+4i`, output: new(complex128),
+		mode: Extended, input: `3+4i`, output: new(complex128),
 		expect: test.Ptr(complex128(3 + 4i)),
 	},
 	"complex64": {
-		input: `1+2i`, output: new(complex64),
+		mode: Extended, input: `1+2i`, output: new(complex64),
 		expect: test.Ptr(complex64(1 + 2i)),
 	},
 
 	// Infinity target.
 	"infinity-pos": {
-		input: `Infinity`, output: new(float64),
+		mode: Strict, input: `Infinity`, output: new(float64),
 		expect: test.Ptr(math.Inf(1)),
 	},
 	"infinity-neg": {
-		input: `-Infinity`, output: new(float64),
+		mode: Strict, input: `-Infinity`, output: new(float64),
 		expect: test.Ptr(math.Inf(-1)),
 	},
 	"infinity-any": {
-		input: `Infinity`, output: new(any),
+		mode: Strict, input: `Infinity`, output: new(any),
 		expect: test.Ptr[any](math.Inf(1)),
 	},
 
 	// String targets.
 	"string": {
-		input: `"hello"`, output: new(string),
+		mode: StrictJson, input: `"hello"`, output: new(string),
 		expect: test.Ptr("hello"),
 	},
 	"string-any": {
-		input: `"world"`, output: new(any),
+		mode: StrictJson, input: `"world"`, output: new(any),
 		expect: test.Ptr[any]("world"),
 	},
 
 	// Object/map targets.
 	"object-empty-any": {
-		input: `{}`, output: new(any),
+		mode: StrictJson, input: `{}`, output: new(any),
 		expect: test.Ptr[any](map[string]any{}),
 	},
 	"object-nested-any": {
-		input: `{"a": 1, "b": {"c": 2}}`, output: new(any),
+		mode: StrictJson, input: `{"a": 1, "b": {"c": 2}}`, output: new(any),
 		expect: test.Ptr[any](map[string]any{
 			"a": big.NewInt(1),
 			"b": map[string]any{"c": big.NewInt(2)},
 		}),
 	},
 	"object-map-string": {
+		mode:   StrictJson,
 		input:  `{"hello": "world"}`,
 		output: &map[string]string{},
 		expect: &map[string]string{"hello": "world"},
 	},
 	"object-map-any": {
+		mode:   StrictJson,
 		input:  `{"a": 1, "b": false, "c":[1, 2.0, "three"]}`,
 		output: &map[string]any{},
 		expect: &map[string]any{
@@ -250,100 +294,123 @@ var decDecodeTestCases = map[string]decDecodeParams{
 	},
 
 	// Array/slice targets.
+	"array-string-strict-json": {
+		mode:   StrictJson,
+		input:  `["a","b"]`,
+		output: &[]string{},
+		expect: &[]string{"a", "b"},
+	},
+	"array-string-relaxed-identifiers": {
+		mode:   Relaxed,
+		input:  `[a,b]`,
+		output: &[]string{},
+		expect: &[]string{"a", "b"},
+	},
+	"array-any-relaxed-identifiers": {
+		mode:   Relaxed,
+		input:  `[a,b]`,
+		output: &[]any{},
+		expect: &[]any{"a", "b"},
+	},
 	"array-nested-any": {
-		input: `[{"a": [{}]}]`, output: new(any),
+		mode: StrictJson, input: `[{"a": [{}]}]`, output: new(any),
 		expect: test.Ptr[any]([]any{
 			map[string]any{"a": []any{map[string]any{}}},
 		}),
 	},
 
 	// Error cases.
+	"error-invalid-interface": {
+		mode: StrictJson, input: `1`, output: nil,
+		error: decError("invalid", Position{}, 0, "", nil, nil),
+	},
 	"error-non-pointer": {
-		input: `1`, output: 42,
+		mode: StrictJson, input: `1`, output: 42,
 		error: decError("no-pointer", Position{}, 0, "",
 			reflect.TypeOf(42), nil),
 	},
 	"error-nil-pointer": {
-		input: `1`, output: (*int)(nil),
+		mode: StrictJson, input: `1`, output: (*int)(nil),
 		error: decError("nil", Position{}, 0, "",
 			reflect.TypeOf((*int)(nil)), nil),
 	},
 	"error-object-unhandled-kind": {
-		input: `{}`, output: new(int),
+		mode: StrictJson, input: `{}`, output: new(int),
 		error: decError("object type", Position{Byte: 1},
 			ObjectStart, "{", reflect.TypeOf(int(0)), nil),
 	},
 	"error-array-unhandled-kind": {
-		input: `[]`, output: new(int),
+		mode: StrictJson, input: `[]`, output: new(int),
 		error: decError("array type", Position{Byte: 1},
 			ArrayStart, "[", reflect.TypeOf(int(0)), nil),
 	},
 	"error-bool-unhandled-kind": {
-		input: `true`, output: new(int),
+		mode: StrictJson, input: `true`, output: new(int),
 		error: decError("bool type", Position{Byte: 4},
 			True, "true", reflect.TypeOf(int(0)), nil),
 	},
 	"error-null-unhandled-kind": {
-		input: `null`, output: new(int),
+		mode: StrictJson, input: `null`, output: new(int),
 		error: decError("null type", Position{Byte: 4},
 			Null, "null", reflect.TypeOf(int(0)), nil),
 	},
 	"error-string-unhandled-kind": {
-		input: `"x"`, output: new(int),
+		mode: StrictJson, input: `"x"`, output: new(int),
 		error: decError("string type", Position{Byte: 3},
 			String, "x", reflect.TypeOf(int(0)), nil),
 	},
 	"error-int-overflow": {
-		input: `300`, output: new(int8),
+		mode: StrictJson, input: `300`, output: new(int8),
 		error: decError("number int", Position{Byte: 3},
 			Integer, "300", reflect.TypeOf(int8(0)), nil),
 	},
 	"error-uint-overflow": {
-		input: `300`, output: new(uint8),
+		mode: StrictJson, input: `300`, output: new(uint8),
 		error: decError("number uint", Position{Byte: 3},
 			Integer, "300", reflect.TypeOf(uint8(0)), nil),
 	},
 	"error-non-string-map-key": {
-		input: `{"a":1}`, output: &map[int]int{},
+		mode: StrictJson, input: `{"a":1}`, output: &map[int]int{},
 		error: decError("map key", Position{Byte: 1},
 			ObjectStart, "", reflect.TypeOf(map[int]int{}), nil),
 	},
 	"error-hex-unhandled-kind": {
-		input: `0xFF`, output: new(bool),
+		mode: Strict, input: `0xFF`, output: new(bool),
 		error: decError("hexa-decimal number type", Position{Byte: 4},
 			HexaDecimal, "0xFF", reflect.TypeOf(false), nil),
 	},
 	"error-complex-unhandled-kind": {
-		input: `1+2i`, output: new(float64),
+		mode: Extended, input: `1+2i`, output: new(float64),
 		error: decError("complex number type", Position{Byte: 4},
 			Complex, "1+2i", reflect.TypeOf(float64(0)), nil,
 		),
 	},
 	"error-infinity-unhandled-kind": {
-		input: `Infinity`, output: new(int),
+		mode: Strict, input: `Infinity`, output: new(int),
 		error: decError("infinity type", Position{Byte: 8},
 			Infinity, "Infinity", reflect.TypeOf(int(0)), nil),
 	},
 	"error-nan-unhandled-kind": {
-		input: `NaN`, output: new(int),
-		error: decError("nan type", Position{Byte: 3}, NaN, "NaN", reflect.TypeOf(int(0)), nil),
+		mode: Strict, input: `NaN`, output: new(int),
+		error: decError("nan type", Position{Byte: 3}, NaN, "NaN",
+			reflect.TypeOf(int(0)), nil),
 	},
 
 	// NaN targets (require special IsNaN check).
 	"nan-float64": {
-		input: `NaN`, output: new(float64),
+		mode: Strict, input: `NaN`, output: new(float64),
 		check: func(t test.Test, out any) {
 			assert.True(t, math.IsNaN(*test.Cast[*float64](out)))
 		},
 	},
 	"nan-float32": {
-		input: `NaN`, output: new(float32),
+		mode: Strict, input: `NaN`, output: new(float32),
 		check: func(t test.Test, out any) {
 			assert.True(t, math.IsNaN(float64(*test.Cast[*float32](out))))
 		},
 	},
 	"nan-any": {
-		input: `NaN`, output: new(any),
+		mode: Strict, input: `NaN`, output: new(any),
 		check: func(t test.Test, out any) {
 			f, ok := (*out.(*any)).(float64)
 			require.True(t, ok)
@@ -353,6 +420,7 @@ var decDecodeTestCases = map[string]decDecodeParams{
 
 	// Decode into any with comprehensive value types (decodeValueAny coverage).
 	"object-all-values-any": {
+		mode:   StrictJson,
 		input:  `{"a":true,"b":false,"c":null,"d":"str","e":[1]}`,
 		output: new(any),
 		expect: test.Ptr[any](map[string]any{
@@ -360,7 +428,16 @@ var decDecodeTestCases = map[string]decDecodeParams{
 			"e": []any{big.NewInt(1)},
 		}),
 	},
+	"object-decimal-any": {
+		mode:   StrictJson,
+		input:  `{"n":1.5}`,
+		output: new(any),
+		expect: test.Ptr[any](map[string]any{
+			"n": test.Okay((&big.Float{}).SetString("1.5")),
+		}),
+	},
 	"object-extended-any": {
+		mode:   Extended,
 		input:  `{"h":0xFF,"c":1+2i,"i":Infinity,"ni":-Infinity}`,
 		output: new(any),
 		expect: test.Ptr[any](map[string]any{
@@ -371,6 +448,7 @@ var decDecodeTestCases = map[string]decDecodeParams{
 
 	// Decode into any with array of all value types (decodeSliceAny coverage).
 	"array-all-values-any": {
+		mode:   StrictJson,
 		input:  `[true, false, null, "str", 1, 1.5, {"a":1}, [2]]`,
 		output: new(any),
 		expect: func() any {
@@ -385,6 +463,7 @@ var decDecodeTestCases = map[string]decDecodeParams{
 		}(),
 	}, // Decode into any with extended numeric slice (decodeSliceAny HexaDecimal/Complex/Infinity).
 	"array-extended-any": {
+		mode:   Extended,
 		input:  `[0xFF, 1+2i, Infinity, -Infinity]`,
 		output: new(any),
 		expect: test.Ptr[any]([]any{
@@ -393,7 +472,7 @@ var decDecodeTestCases = map[string]decDecodeParams{
 	},
 	// Decode NaN into slice (requires IsNaN check).
 	"nan-slice-any": {
-		input: `[NaN]`, output: new(any),
+		mode: Strict, input: `[NaN]`, output: new(any),
 		check: func(t test.Test, out any) {
 			s, ok := (*out.(*any)).([]any)
 			require.True(t, ok)
@@ -405,7 +484,7 @@ var decDecodeTestCases = map[string]decDecodeParams{
 	},
 	// Decode NaN into map value (requires IsNaN check, covers decodeValueAny NaN case).
 	"nan-map-any": {
-		input: `{"n":NaN}`, output: new(any),
+		mode: Strict, input: `{"n":NaN}`, output: new(any),
 		check: func(t test.Test, out any) {
 			m, ok := (*out.(*any)).(map[string]any)
 			require.True(t, ok)
@@ -416,108 +495,108 @@ var decDecodeTestCases = map[string]decDecodeParams{
 	},
 	// Error: unhandled token type in decodeValueAny default case.
 	"error-decode-valueany-default": {
-		input: `{"a"::}`, output: new(any),
+		mode: StrictJson, input: `{"a"::}`, output: new(any),
 		error: decError("unknown", Position{Byte: 6}, Colon, ":", nil, nil),
 	},
 	// Error: initial NextToken failure in decodeValue.
 	"error-decode-empty": {
-		input: ``, output: new(any),
+		mode: StrictJson, input: ``, output: new(any),
 		error: io.ErrUnexpectedEOF,
 	},
 	// Error: unhandled token type in decodeValue default case.
 	"error-decode-colon": {
-		input: `:`, output: new(any),
+		mode: StrictJson, input: `:`, output: new(any),
 		error: decError("unknown", Position{Byte: 1},
 			Colon, ":", reflect.TypeOf((*any)(nil)).Elem(), nil),
 	},
 	// Error: decodeMap propagates decodeValue error.
 	"error-decode-map-value": {
-		input: `{"a":{}}`, output: &map[string]int{},
+		mode: StrictJson, input: `{"a":{}}`, output: &map[string]int{},
 		error: decError("object type", Position{Byte: 6},
 			ObjectStart, "{", reflect.TypeOf(int(0)), nil),
 	},
 	// Error: decodeMapAny key scan truncated.
 	"error-decode-obj-any-truncated-key": {
-		input: `{`, output: new(any),
+		mode: StrictJson, input: `{`, output: new(any),
 		error: io.ErrUnexpectedEOF,
 	},
 	// Error: decodeMapAny value decode truncated (also covers decodeValueAny err).
 	"error-decode-obj-any-truncated-value": {
-		input: `{"a":`, output: new(any),
+		mode: StrictJson, input: `{"a":`, output: new(any),
 		error: io.ErrUnexpectedEOF,
 	},
 	// Error: decodeSliceAny token scan truncated.
 	"error-decode-slice-truncated": {
-		input: `[`, output: new(any),
+		mode: StrictJson, input: `[`, output: new(any),
 		error: io.ErrUnexpectedEOF,
 	},
 	// Error: decodeSliceAny ObjectStart inner failure.
 	"error-decode-slice-obj-truncated": {
-		input: `[{`, output: new(any),
+		mode: StrictJson, input: `[{`, output: new(any),
 		error: io.ErrUnexpectedEOF,
 	},
 	// Error: decodeSliceAny ArrayStart inner failure.
 	"error-decode-slice-arr-truncated": {
-		input: `[[`, output: new(any),
+		mode: StrictJson, input: `[[`, output: new(any),
 		error: io.ErrUnexpectedEOF,
 	},
 
 	// Error: interface with methods rejects all value types.
 	"error-object-interface-methods": {
-		input: `{}`, output: new(error),
+		mode: StrictJson, input: `{}`, output: new(error),
 		error: decError("object", Position{Byte: 1},
 			ObjectStart, "{", reflect.TypeOf((*error)(nil)).Elem(), nil),
 	},
 	"error-array-interface-methods": {
-		input: `[]`, output: new(error),
+		mode: StrictJson, input: `[]`, output: new(error),
 		error: decError("array", Position{Byte: 1},
 			ArrayStart, "[", reflect.TypeOf((*error)(nil)).Elem(), nil),
 	},
 	"error-bool-interface-methods": {
-		input: `true`, output: new(error),
+		mode: StrictJson, input: `true`, output: new(error),
 		error: decError("bool", Position{Byte: 4},
 			True, "true", reflect.TypeOf((*error)(nil)).Elem(), nil),
 	},
 	"error-string-interface-methods": {
-		input: `"x"`, output: new(error),
+		mode: StrictJson, input: `"x"`, output: new(error),
 		error: decError("string", Position{Byte: 3},
 			String, "x", reflect.TypeOf((*error)(nil)).Elem(), nil),
 	},
 	"error-int-interface-methods": {
-		input: `1`, output: new(error),
+		mode: StrictJson, input: `1`, output: new(error),
 		error: decError("number", Position{Byte: 1},
 			Integer, "1", reflect.TypeOf((*error)(nil)).Elem(), nil),
 	},
 	"error-hex-interface-methods": {
-		input: `0xFF`, output: new(error),
+		mode: Strict, input: `0xFF`, output: new(error),
 		error: decError("hexa-decimal number", Position{Byte: 4},
 			HexaDecimal, "0xFF", reflect.TypeOf((*error)(nil)).Elem(), nil),
 	},
 	"error-complex-interface-methods": {
-		input: `1+2i`, output: new(error),
+		mode: Extended, input: `1+2i`, output: new(error),
 		error: decError("complex number", Position{Byte: 4},
 			Complex, "1+2i", reflect.TypeOf((*error)(nil)).Elem(), nil),
 	},
 	"error-infinity-interface-methods": {
-		input: `Infinity`, output: new(error),
+		mode: Strict, input: `Infinity`, output: new(error),
 		error: decError("infinity", Position{Byte: 8},
 			Infinity, "Infinity", reflect.TypeOf((*error)(nil)).Elem(), nil),
 	},
 	"error-nan-interface-methods": {
-		input: `NaN`, output: new(error),
+		mode: Strict, input: `NaN`, output: new(error),
 		error: decError("nan", Position{Byte: 3},
 			NaN, "NaN", reflect.TypeOf((*error)(nil)).Elem(), nil),
 	},
 
 	// Error: unhandled target kind for numeric token.
 	"error-int-target-bool": {
-		input: `1`, output: new(bool),
+		mode: StrictJson, input: `1`, output: new(bool),
 		error: decError("number type", Position{Byte: 1},
 			Integer, "1", reflect.TypeOf(false), nil),
 	},
 	// Error: float32 parse overflow.
 	"error-float32-overflow": {
-		input: `4e38`, output: new(float32),
+		mode: StrictJson, input: `4e38`, output: new(float32),
 		error: decError("number float", Position{Byte: 4},
 			Decimal, "4e38", reflect.TypeOf(float32(0)), &strconv.NumError{
 				Func: "ParseFloat",
@@ -527,21 +606,65 @@ var decDecodeTestCases = map[string]decDecodeParams{
 	},
 	// Error: hex int8 overflow.
 	"error-hex-int-overflow": {
-		input: `0xFF`, output: new(int8),
+		mode: Strict, input: `0xFF`, output: new(int8),
 		error: decError("hexa-decimal number int overflow", Position{Byte: 4},
 			HexaDecimal, "0xFF", reflect.TypeOf(int8(0)), nil),
 	},
 	// Error: negative hex value decoded into uint.
 	"error-hex-uint-negative": {
-		input: `-0x1`, output: new(uint8),
+		mode: Strict, input: `-0x1`, output: new(uint8),
 		error: decError("hexa-decimal number uint overflow", Position{Byte: 4},
 			HexaDecimal, "-0x1", reflect.TypeOf(uint8(0)), nil),
 	},
 	// Error: decodeMap NextToken failure (truncated key).
 	"error-decode-map-key-truncated": {
-		input:  `{`,
+		mode: StrictJson, input: `{`,
 		output: func() any { m := map[string]string{}; return &m }(),
 		error:  io.ErrUnexpectedEOF,
+	},
+	"error-decode-any-complex-parse": {
+		mode:   Extended,
+		input:  `{"value":1e9999+1e9999i}`,
+		output: new(any),
+		error: decError("complex number", Position{Byte: 23}, Complex,
+			"1e9999+1e9999i",
+			nil, &strconv.NumError{
+				Func: "ParseComplex",
+				Num:  "1e9999+1e9999i",
+				Err:  strconv.ErrRange,
+			}),
+	},
+	"error-decode-slice-any-complex-parse": {
+		mode:   Extended,
+		input:  `[1e9999+1e9999i]`,
+		output: new(any),
+		error: decError("complex number", Position{Byte: 15}, Complex,
+			"1e9999+1e9999i",
+			nil, &strconv.NumError{
+				Func: "ParseComplex",
+				Num:  "1e9999+1e9999i",
+				Err:  strconv.ErrRange,
+			}),
+	},
+	"error-decode-struct-next": {
+		mode:   StrictJson,
+		input:  `{`,
+		output: &decStructInternalObject{},
+		error:  io.ErrUnexpectedEOF,
+	},
+	"error-decode-struct-skip-unknown-value": {
+		mode:   StrictJson,
+		input:  `{"missing":,}`,
+		output: &decStructInternalObject{},
+		error: decError("unknown", Position{Byte: 12}, Comma, ",",
+			reflect.TypeOf((*any)(nil)).Elem(), nil),
+	},
+	"error-decode-struct-field-value": {
+		mode:   StrictJson,
+		input:  `{"name":,}`,
+		output: &decStructInternalObject{},
+		error: decError("unknown", Position{Byte: 9}, Comma, ",",
+			reflect.TypeOf(""), nil),
 	},
 }
 
@@ -553,7 +676,8 @@ func TestDecDecode(t *testing.T) {
 	test.Map(t, decDecodeTestCases).
 		Run(func(t test.Test, param decDecodeParams) {
 			// Given
-			decoder := NewDecoder(strings.NewReader(param.input))
+			decoder := NewDecoder(strings.NewReader(param.input)).
+				Mode(param.mode)
 
 			// When
 			err := decoder.Decode(param.output)
@@ -568,6 +692,120 @@ func TestDecDecode(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, param.expect, param.output)
 			}
+		})
+}
+
+type decDecodeStructObject struct {
+	Name string `json:"name"`
+	Type string
+}
+
+type decDecodeStructTaggedObject struct {
+	//revive:disable-next-line:struct-tag
+	Name string `json:"name,case:ignore"`
+	Type string
+}
+
+type decDecodeStructCaseStrict struct {
+	X bool `json:"firstName"`
+}
+
+type decDecodeStructCaseTagIgnore struct {
+	//revive:disable-next-line:struct-tag
+	X bool `json:"firstName,case:ignore"`
+}
+
+// decDecodeStructParams holds parameters for TestDecDecodeStructMode.
+type decDecodeStructParams struct {
+	mode   Mode
+	input  string
+	output any
+	expect any
+}
+
+// decDecodeStructTestCases defines test cases for testing struct field
+// decoding.
+var decDecodeStructTestCases = map[string]decDecodeStructParams{
+	"case-sensitive": {
+		mode:   StrictJson,
+		input:  `{"NAME":"alpha","Type":"primary"}`,
+		output: &decDecodeStructObject{},
+		expect: &decDecodeStructObject{Type: "primary"},
+	},
+	"case-ignore": {
+		mode:   StrictJson | CaseIgnore,
+		input:  `{"NAME":"alpha","Type":"primary"}`,
+		output: &decDecodeStructObject{},
+		expect: &decDecodeStructObject{Name: "alpha", Type: "primary"},
+	},
+	"field-tag-case-ignore": {
+		mode:   StrictJson,
+		input:  `{"NAME":"alpha","Type":"primary"}`,
+		output: &decDecodeStructTaggedObject{},
+		expect: &decDecodeStructTaggedObject{
+			Name: "alpha", Type: "primary",
+		},
+	},
+	"case-strict-firstname": {
+		mode:   StrictJson,
+		input:  `{"firstname":true}`,
+		output: &decDecodeStructCaseStrict{},
+		expect: &decDecodeStructCaseStrict{},
+	},
+	"case-strict-firstname-exact": {
+		mode:   StrictJson,
+		input:  `{"firstName":true}`,
+		output: &decDecodeStructCaseStrict{},
+		expect: &decDecodeStructCaseStrict{X: true},
+	},
+	"case-ignore-firstname": {
+		mode:   StrictJson | CaseIgnore,
+		input:  `{"firstname":true}`,
+		output: &decDecodeStructCaseStrict{},
+		expect: &decDecodeStructCaseStrict{X: true},
+	},
+	"case-ignore-first-name": {
+		mode:   StrictJson | CaseIgnore,
+		input:  `{"first-name":true}`,
+		output: &decDecodeStructCaseStrict{},
+		expect: &decDecodeStructCaseStrict{X: true},
+	},
+	"case-ignore-first-name-upper": {
+		mode:   StrictJson | CaseIgnore,
+		input:  `{"FIRST_NAME":true}`,
+		output: &decDecodeStructCaseStrict{},
+		expect: &decDecodeStructCaseStrict{X: true},
+	},
+	"tag-case-ignore-first-name": {
+		mode:   StrictJson,
+		input:  `{"first_name":true}`,
+		output: &decDecodeStructCaseTagIgnore{},
+		expect: &decDecodeStructCaseTagIgnore{X: true},
+	},
+}
+
+// TestDecDecodeStructMode tests decoding JSON into struct values with
+// different mode settings.
+func TestDecDecodeStructMode(t *testing.T) {
+	test.Map(t, decDecodeStructTestCases).
+		Run(func(t test.Test, param decDecodeStructParams) {
+			// Given
+			decoder := NewDecoder(strings.NewReader(param.input)).
+				Mode(param.mode)
+
+			// When
+			err := decoder.Decode(param.output)
+
+			// Then
+			require.NoError(t, err)
+			assert.Equal(t, param.expect, param.output)
+		})
+}
+
+func TestDecodeErrorError(t *testing.T) {
+	test.Map(t, decErrorStringTestCases).
+		Run(func(t test.Test, param decErrorStringParams) {
+			assert.Equal(t, param.expect, param.err.Error())
 		})
 }
 
@@ -762,6 +1000,7 @@ func BenchmarkDecTokenNext(b *testing.B) {
 
 // decNextParams holds parameters for TestDecNextToken.
 type decNextParams struct {
+	mode   Mode
 	input  string
 	tokens []token
 	error  error
@@ -770,62 +1009,62 @@ type decNextParams struct {
 var decNextTestCases = map[string]decNextParams{
 	// Flat primitive values.
 	"string": {
-		input:  `"hello"`,
+		mode: StrictJson, input: `"hello"`,
 		tokens: []token{{String, "hello"}},
 	},
 	"integer": {
-		input:  `42`,
+		mode: StrictJson, input: `42`,
 		tokens: []token{{Integer, "42"}},
 	},
 	"decimal": {
-		input:  `3.14`,
+		mode: StrictJson, input: `3.14`,
 		tokens: []token{{Decimal, "3.14"}},
 	},
 	"true": {
-		input:  `true`,
+		mode: StrictJson, input: `true`,
 		tokens: []token{{True, "true"}},
 	},
 	"false": {
-		input:  `false`,
+		mode: StrictJson, input: `false`,
 		tokens: []token{{False, "false"}},
 	},
 	"null": {
-		input:  `null`,
+		mode: StrictJson, input: `null`,
 		tokens: []token{{Null, "null"}},
 	},
 
-	// Extended numeric token types.
+	// Strict numeric token types.
 	"nan": {
-		input:  `NaN`,
+		mode: Strict, input: `NaN`,
 		tokens: []token{{NaN, "NaN"}},
 	},
 	"infinity": {
-		input:  `Infinity`,
+		mode: Strict, input: `Infinity`,
 		tokens: []token{{Infinity, "Infinity"}},
 	},
 	"infinity-neg": {
-		input:  `-Infinity`,
+		mode: Strict, input: `-Infinity`,
 		tokens: []token{{Infinity, "-Infinity"}},
 	},
 	"hex": {
-		input:  `0xFF`,
+		mode: Strict, input: `0xFF`,
 		tokens: []token{{HexaDecimal, "0xFF"}},
 	},
 	"complex": {
-		input:  `3+4i`,
+		mode: Extended, input: `3+4i`,
 		tokens: []token{{Complex, "3+4i"}},
 	},
 
 	// Empty collections.
 	"empty-object": {
-		input: `{}`,
+		mode: StrictJson, input: `{}`,
 		tokens: []token{
 			{ObjectStart, "{"},
 			{ObjectEnd, "}"},
 		},
 	},
 	"empty-array": {
-		input: `[]`,
+		mode: StrictJson, input: `[]`,
 		tokens: []token{
 			{ArrayStart, "["},
 			{ArrayEnd, "]"},
@@ -834,7 +1073,7 @@ var decNextTestCases = map[string]decNextParams{
 
 	// Simple object with one key.
 	"object-int": {
-		input: `{"a": 0}`,
+		mode: StrictJson, input: `{"a": 0}`,
 		tokens: []token{
 			{ObjectStart, "{"}, {String, "a"}, {Integer, "0"}, {ObjectEnd, "}"},
 		},
@@ -842,7 +1081,7 @@ var decNextTestCases = map[string]decNextParams{
 
 	// Object with nested array value.
 	"object-array": {
-		input: `{"a": []}`,
+		mode: StrictJson, input: `{"a": []}`,
 		tokens: []token{
 			{ObjectStart, "{"},
 			{String, "a"},
@@ -854,7 +1093,7 @@ var decNextTestCases = map[string]decNextParams{
 
 	// Object with two keys.
 	"object-two-keys": {
-		input: `{"a":{}, "b":{}}`,
+		mode: StrictJson, input: `{"a":{}, "b":{}}`,
 		tokens: []token{
 			{ObjectStart, "{"},
 			{String, "a"},
@@ -869,7 +1108,7 @@ var decNextTestCases = map[string]decNextParams{
 
 	// Array with one integer.
 	"array-int": {
-		input: `[10]`,
+		mode: StrictJson, input: `[10]`,
 		tokens: []token{
 			{ArrayStart, "["}, {Integer, "10"}, {ArrayEnd, "]"},
 		},
@@ -877,7 +1116,7 @@ var decNextTestCases = map[string]decNextParams{
 
 	// Deeply nested structure.
 	"deep-nested": {
-		input: `[[[[[[{"true":true}]]]]]]`,
+		mode: StrictJson, input: `[[[[[[{"true":true}]]]]]]`,
 		tokens: []token{
 			{ArrayStart, "["},
 			{ArrayStart, "["},
@@ -900,6 +1139,7 @@ var decNextTestCases = map[string]decNextParams{
 
 	// Mixed-type array.
 	"array-mixed": {
+		mode:  StrictJson,
 		input: `[{"a": 1,"b": 123.456, "c": null, "d": [1, -2, "three", true, false, ""]}]`,
 		tokens: []token{
 			{ArrayStart, "["},
@@ -926,24 +1166,24 @@ var decNextTestCases = map[string]decNextParams{
 
 	// Error cases: truncated input.
 	"error-truncated-array": {
-		input:  `[`,
+		mode: StrictJson, input: `[`,
 		tokens: []token{{ArrayStart, "["}},
 		error:  io.ErrUnexpectedEOF,
 	},
 	"error-truncated-object": {
-		input:  `{"":2`,
+		mode: StrictJson, input: `{"":2`,
 		tokens: []token{{ObjectStart, "{"}, {String, ""}, {Integer, "2"}},
 		error:  io.ErrUnexpectedEOF,
 	},
 	"error-truncated-key": {
-		input:  `{"`,
+		mode: StrictJson, input: `{"`,
 		tokens: []token{{ObjectStart, "{"}},
 		error:  io.ErrUnexpectedEOF,
 	},
 
 	// Error cases: structural errors.
 	"error-bad-key-type": {
-		input:  `{1: 1}`,
+		mode: StrictJson, input: `{1: 1}`,
 		tokens: []token{{ObjectStart, "{"}},
 		error: &DecodeError{
 			Msg:   "object key",
@@ -953,7 +1193,7 @@ var decNextTestCases = map[string]decNextParams{
 		},
 	},
 	"error-double-colon": {
-		input:  `{"test"::"input"}`,
+		mode: StrictJson, input: `{"test"::"input"}`,
 		tokens: []token{{ObjectStart, "{"}, {String, "test"}, {Colon, ":"}},
 		error: &DecodeError{
 			Msg:   "object comma",
@@ -963,7 +1203,7 @@ var decNextTestCases = map[string]decNextParams{
 		},
 	},
 	"error-missing-comma-obj": {
-		input: `{"a":1:}`,
+		mode: StrictJson, input: `{"a":1:}`,
 		tokens: []token{
 			{ObjectStart, "{"}, {String, "a"}, {Integer, "1"},
 		},
@@ -975,7 +1215,7 @@ var decNextTestCases = map[string]decNextParams{
 		},
 	},
 	"error-unexpected-comma-value": {
-		input: `,`,
+		mode: StrictJson, input: `,`,
 		error: &DecodeError{
 			Msg:   "value",
 			Pos:   Position{Byte: 1},
@@ -984,7 +1224,7 @@ var decNextTestCases = map[string]decNextParams{
 		},
 	},
 	"error-unexpected-comma-array": {
-		input:  `[,]`,
+		mode: StrictJson, input: `[,]`,
 		tokens: []token{{ArrayStart, "["}},
 		error: &DecodeError{
 			Msg:   "array value",
@@ -994,7 +1234,7 @@ var decNextTestCases = map[string]decNextParams{
 		},
 	},
 	"error-missing-comma-arr": {
-		input:  `[1:]`,
+		mode: StrictJson, input: `[1:]`,
 		tokens: []token{{ArrayStart, "["}, {Integer, "1"}},
 		error: &DecodeError{
 			Msg:   "array comma",
@@ -1006,15 +1246,16 @@ var decNextTestCases = map[string]decNextParams{
 
 	// Error cases: truncated at various state-machine steps.
 	"error-empty-input": {
+		mode:  StrictJson,
 		error: io.ErrUnexpectedEOF,
 	},
 	"error-truncated-colon": {
-		input:  `{"a"`,
+		mode: StrictJson, input: `{"a"`,
 		tokens: []token{{ObjectStart, "{"}, {String, "a"}},
 		error:  io.ErrUnexpectedEOF,
 	},
 	"error-missing-colon": {
-		input:  `{"a" 1}`,
+		mode: StrictJson, input: `{"a" 1}`,
 		tokens: []token{{ObjectStart, "{"}, {String, "a"}},
 		error: &DecodeError{
 			Msg:   "object colon",
@@ -1024,19 +1265,19 @@ var decNextTestCases = map[string]decNextParams{
 		},
 	},
 	"error-truncated-value": {
-		input:  `{"a":`,
+		mode: StrictJson, input: `{"a":`,
 		tokens: []token{{ObjectStart, "{"}, {String, "a"}},
 		error:  io.ErrUnexpectedEOF,
 	},
 	"error-truncated-arr-value": {
-		input:  `[1`,
+		mode: StrictJson, input: `[1`,
 		tokens: []token{{ArrayStart, "["}, {Integer, "1"}},
 		error:  io.ErrUnexpectedEOF,
 	},
 
 	// Array nested in array (exercises stateArrayValue case !inObj).
 	"nested-array": {
-		input: `[[]]`,
+		mode: StrictJson, input: `[[]]`,
 		tokens: []token{
 			{ArrayStart, "["},
 			{ArrayStart, "["},
@@ -1050,7 +1291,8 @@ func TestDecNext(t *testing.T) {
 	test.Map(t, decNextTestCases).
 		Run(func(t test.Test, param decNextParams) {
 			// Given
-			decoder := NewDecoder(strings.NewReader(param.input))
+			decoder := NewDecoder(strings.NewReader(param.input)).
+				Mode(param.mode)
 
 			// When / Then (per token)
 			for _, want := range param.tokens {
@@ -1073,55 +1315,75 @@ func TestDecNext(t *testing.T) {
 
 // decTokenParams holds parameters for TestDecToken.
 type decTokenParams struct {
+	mode   Mode
 	input  string
 	tokens []json.Token
+	expect json.Token
 	error  error
 }
 
 var decTokenTestCases = map[string]decTokenParams{
 	// Delimiter tokens.
 	"delim-object": {
-		input:  `{}`,
+		mode: Strict, input: `{}`,
 		tokens: []json.Token{json.Delim('{'), json.Delim('}')},
 	},
 	"delim-array": {
-		input:  `[]`,
+		mode: StrictJson, input: `[]`,
 		tokens: []json.Token{json.Delim('['), json.Delim(']')},
 	},
 
 	// Primitive tokens.
-	"bool-true":  {input: `true`, tokens: []json.Token{true}},
-	"bool-false": {input: `false`, tokens: []json.Token{false}},
-	"null":       {input: `null`, tokens: []json.Token{nil}},
-	"string":     {input: `"hi"`, tokens: []json.Token{"hi"}},
-	"integer":    {input: `7`, tokens: []json.Token{float64(7)}},
-	"decimal":    {input: `1.5`, tokens: []json.Token{float64(1.5)}},
+	"bool-true": {
+		mode: StrictJson, input: `true`,
+		tokens: []json.Token{true},
+	},
+	"bool-false": {
+		mode: StrictJson, input: `false`,
+		tokens: []json.Token{false},
+	},
+	"null": {
+		mode: StrictJson, input: `null`,
+		tokens: []json.Token{nil},
+	},
+	"string": {
+		mode: StrictJson, input: `"hi"`,
+		tokens: []json.Token{"hi"},
+	},
+	"integer": {
+		mode: StrictJson, input: `7`,
+		tokens: []json.Token{float64(7)},
+	},
+	"decimal": {
+		mode: StrictJson, input: `1.5`,
+		tokens: []json.Token{float64(1.5)},
+	},
 
-	// Extended numeric tokens.
+	// Strict numeric tokens.
 	"hex": {
-		input:  `0x10`,
+		mode: Strict, input: `0x10`,
 		tokens: []json.Token{float64(16)},
 	},
 	"complex": {
-		input:  `1+2i`,
+		mode: Extended, input: `1+2i`,
 		tokens: []json.Token{complex(1, 2)},
 	},
 	"infinity-pos": {
-		input:  `Infinity`,
+		mode: Strict, input: `Infinity`,
 		tokens: []json.Token{math.Inf(1)},
 	},
 	"infinity-neg": {
-		input:  `-Infinity`,
+		mode: Strict, input: `-Infinity`,
 		tokens: []json.Token{math.Inf(-1)},
 	},
 	"nan": {
 		// NaN != NaN so we can only check io.EOF; actual value tested via IsNaN.
-		input: `NaN`,
+		mode: Strict, input: `NaN`,
 	},
 
 	// Error cases.
 	"error-default": {
-		input: `:`,
+		mode: StrictJson, input: `:`,
 		error: &DecodeError{
 			Msg:   "unhandled type",
 			Pos:   Position{Byte: 1},
@@ -1129,13 +1391,48 @@ var decTokenTestCases = map[string]decTokenParams{
 			Token: ":",
 		},
 	},
+	"error-number-parse": {
+		mode:   StrictJson,
+		input:  `1e9999`,
+		expect: 0,
+		error: decError("number", Position{Byte: 6}, Decimal, "1e9999", nil,
+			&strconv.NumError{
+				Func: "ParseFloat",
+				Num:  "1e9999",
+				Err:  strconv.ErrRange,
+			}),
+	},
+	"error-hex-parse": {
+		mode:   Strict,
+		input:  `0x10000000000000000`,
+		expect: 0,
+		error: decError("hexa-decimal number", Position{Byte: 19},
+			HexaDecimal, "0x10000000000000000", nil, &strconv.NumError{
+				Func: "ParseInt",
+				Num:  "0x10000000000000000",
+				Err:  strconv.ErrRange,
+			}),
+	},
+	"error-complex-parse": {
+		mode:   Extended,
+		input:  `1e9999+1e9999i`,
+		expect: 0,
+		error: decError("complex number", Position{Byte: 14}, Complex,
+			"1e9999+1e9999i", nil,
+			&strconv.NumError{
+				Func: "ParseComplex",
+				Num:  "1e9999+1e9999i",
+				Err:  strconv.ErrRange,
+			}),
+	},
 }
 
 func TestDecToken(t *testing.T) {
 	test.Map(t, decTokenTestCases).
 		Run(func(t test.Test, param decTokenParams) {
 			// Given
-			decoder := NewDecoder(strings.NewReader(param.input))
+			decoder := NewDecoder(strings.NewReader(param.input)).
+				Mode(param.mode)
 
 			// When / Then (per token)
 			for _, want := range param.tokens {
@@ -1154,12 +1451,13 @@ func TestDecToken(t *testing.T) {
 			}
 
 			// Then (terminal state or error)
-			got, err := decoder.Token()
+			token, err := decoder.Token()
 			if param.error != nil {
+				assert.Equal(t, param.expect, token)
 				assert.Equal(t, param.error, err)
 			} else {
 				assert.Equal(t, io.EOF, err)
+				assert.Nil(t, token)
 			}
-			assert.Nil(t, got)
 		})
 }

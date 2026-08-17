@@ -50,9 +50,8 @@ type Reader struct {
 	buffer []byte
 	// reader is the underlying io.Reader from which the Reader reads data.
 	reader io.Reader
-	// breath indicates whether the reader is in breathing or in growing only
-	// mode.
-	breath bool
+	// mode controls buffer retention and parsing behavior.
+	mode Mode
 
 	// new is the number of bytes to allocate for a new buffer when extending
 	// the buffer. It is used to avoid frequent small allocations.
@@ -86,79 +85,85 @@ type Reader struct {
 //
 // The `Reader` supports the following two modes:
 //
-//  1. In a breathing mode, where it keeps a dynamic input buffer containing
-//     primarily the current token and its surrounding context, and
-//  2. In a growing only mode where, it keeps the entire input data in memory
-//     and allows to access any part of it at any time.
+//  1. In a default breathing mode, where it keeps a dynamic input buffer
+//     containing only the current token and its surrounding context, and
+//  2. In a retaining mode where, it keeps the entire input data in memory
+//     and allows to access any part of the buffer at any time.
 //
 // The `Reader` is used by the Scanner to read the input data and track the
 // current stream position.
 func NewReader(buffer []byte, reader io.Reader) *Reader {
 	return &Reader{
-		buffer: buffer, reader: reader, breath: true,
+		buffer: buffer, reader: reader, mode: Evict,
 		new: newBufferSize, min: minReadSize,
 	}
 }
 
+// Mode sets the mode used for reading.
+func (r *Reader) Mode(mode Mode) *Reader {
+	r.mode = mode
+	return r
+}
+
 // release discards n bytes from the front of the window, updating the line
 // and column position by counting newlines in the released bytes.
-func (b *Reader) release(num int) {
-	for _, c := range b.buffer[b.offset : b.offset+num] {
+func (r *Reader) release(num int) {
+	for _, c := range r.buffer[r.offset : r.offset+num] {
 		if c == '\n' {
-			b.line++
-			b.char = 0
+			r.line++
+			r.char = 0
 		} else {
-			b.char++
+			r.char++
 		}
 	}
-	b.offset += num
-	b.byte += num
+	r.offset += num
+	r.byte += num
 }
 
 // advance discards n bytes from the front of the window, applying the
 // pre-computed line and char deltas supplied by the caller.
-func (b *Reader) advance(offset int) {
-	b.offset += offset
-	b.byte += offset
+func (r *Reader) advance(offset int) {
+	r.offset += offset
+	r.byte += offset
 }
 
 // advance_ discards n bytes from the front of the window, applying the
 // pre-computed line and char deltas supplied by the caller.
-func (b *Reader) advance_(offset, line, char int) {
-	b.line += line
+func (r *Reader) advance_(offset, line, char int) {
+	r.line += line
 	if line == 0 {
-		b.char += char
+		r.char += char
 	} else {
-		b.char = char
+		r.char = char
 	}
-	b.offset += offset
-	b.byte += offset
+	r.offset += offset
+	r.byte += offset
 }
 
 // position returns the current stream position.
-func (b *Reader) position() Position {
+func (r *Reader) position() Position {
 	return Position{
-		Byte: b.byte,
-		Line: b.line,
-		Char: b.char,
+		Byte: r.byte,
+		Line: r.line,
+		Char: r.char,
 	}
 }
 
 // window returns the current window.
 // The window is invalidated by calls to release or extend.
-func (b *Reader) window() []byte {
-	return b.buffer[b.offset:]
+func (r *Reader) window() []byte {
+	return r.buffer[r.offset:]
 }
 
 // peek returns the byte at the given window offset, extending the buffer as
 // needed. It returns false when the underlying reader is exhausted first.
-func (b *Reader) peek() (byte, bool) {
+func (r *Reader) peek() (byte, bool) {
 	for {
-		if b.offset < len(b.buffer) {
-			return b.buffer[b.offset], true
+		if r.offset < len(r.buffer) {
+			return r.buffer[r.offset], true
 		}
 
-		if b.extend() == 0 {
+		if r.extend() == 0 {
 			return EOF, false
 		}
 	}
@@ -168,14 +173,14 @@ func (b *Reader) peek() (byte, bool) {
 // needed. It returns false when the underlying reader is exhausted first.
 //
 // FIXME: merge with peek?
-func (b *Reader) get(offset int) (byte, bool) {
+func (r *Reader) get(offset int) (byte, bool) {
 	for {
-		index := b.offset + offset
-		if index < len(b.buffer) {
-			return b.buffer[index], true
+		index := r.offset + offset
+		if index < len(r.buffer) {
+			return r.buffer[index], true
 		}
 
-		if b.extend() == 0 {
+		if r.extend() == 0 {
 			return EOF, false
 		}
 	}
@@ -184,14 +189,14 @@ func (b *Reader) get(offset int) (byte, bool) {
 // compare checks if expect is present at the given window offset, extending
 // the buffer as needed to read the full expected slice. It returns false on
 // mismatch or early EOF.
-func (b *Reader) compare(offset int, expect []byte) bool {
+func (r *Reader) compare(offset int, expect []byte) bool {
 	need := offset + len(expect)
-	window := b.window()
+	window := r.window()
 	for len(window) < need {
-		if b.extend() == 0 {
+		if r.extend() == 0 {
 			return false
 		}
-		window = b.window()
+		window = r.window()
 	}
 
 	return bytes.Equal(window[offset:need], expect)
@@ -204,10 +209,10 @@ func (b *Reader) compare(offset int, expect []byte) bool {
 //
 //nolint:gocognit // prioritize performance.
 //revive:disable-next-line:cognitive-complexity // prioritize performance.
-func (b *Reader) skip() int {
+func (r *Reader) skip() int {
 	offset, line, char := 0, 0, 0
 	for {
-		window := b.window()
+		window := r.window()
 
 		for offset < len(window) {
 			if mask[window[offset]]&base == space {
@@ -236,62 +241,60 @@ func (b *Reader) skip() int {
 			if extend {
 				break
 			} else if offset > 0 {
-				b.advance_(offset, line, char)
+				r.advance_(offset, line, char)
 			}
 
 			return offset
 		}
 
-		if b.extend() == 0 {
-			b.advance_(offset, line, char)
+		if r.extend() == 0 {
+			r.advance_(offset, line, char)
 			return offset
 		}
 	}
 }
 
 // extend extends the window with data from the underlying reader.
-func (b *Reader) extend() int {
-	if b.err != nil {
+func (r *Reader) extend() int {
+	if r.err != nil {
 		return 0
 	}
 
-	remain := len(b.buffer) - b.offset
-	if b.breath { //nolint:nestif // prioritize performance.
+	remain := len(r.buffer) - r.offset
+	//nolint:nestif // prioritize performance.
+	if r.mode&Retain == Retain {
+		if cap(r.buffer)-len(r.buffer) < r.min {
+			// Otherwise, we must allocate/extend a new buffer
+			buffer := make([]byte, max(cap(r.buffer)*2, r.new))
+			copy(buffer, r.buffer)
+			r.buffer = buffer
+		}
+		remain = len(r.buffer)
+	} else {
 		if remain == 0 {
-			b.buffer = b.buffer[:0]
-			b.offset = 0
+			r.buffer = r.buffer[:0]
+			r.offset = 0
 		}
 
-		if cap(b.buffer)-len(b.buffer) < b.min {
-			if cap(b.buffer)-remain >= b.min {
+		if cap(r.buffer)-len(r.buffer) < r.min {
+			if cap(r.buffer)-remain >= r.min {
 				// buffer has enough space if we move the data to the front.
-				copy(b.buffer, b.buffer[b.offset:])
-				b.offset = 0
+				copy(r.buffer, r.buffer[r.offset:])
 			} else {
 				// otherwise, we must allocate/extend a new buffer
-				buffer := make([]byte, max(cap(b.buffer)*2, b.new))
-				copy(buffer, b.buffer[b.offset:])
-				b.buffer = buffer
-				b.offset = 0
+				buffer := make([]byte, max(cap(r.buffer)*2, r.new))
+				copy(buffer, r.buffer[r.offset:])
+				r.buffer = buffer
 			}
+			r.offset = 0
 		}
-
-		remain += b.offset
-	} else {
-		if cap(b.buffer)-len(b.buffer) < b.min {
-			// otherwise, we must allocate/extend a new buffer
-			buffer := make([]byte, max(cap(b.buffer)*2, b.new))
-			copy(buffer, b.buffer)
-			b.buffer = buffer
-		}
-
-		remain = len(b.buffer)
+		remain += r.offset
 	}
 
-	offset, err := b.reader.Read(b.buffer[remain:cap(b.buffer)])
+	offset, err := r.reader.Read(r.buffer[remain:cap(r.buffer)])
 	// reduce length to the existing plus the data we read.
-	b.buffer = b.buffer[:remain+offset]
-	b.err = err
+	r.buffer = r.buffer[:remain+offset]
+	r.err = err
 
 	return offset
 }

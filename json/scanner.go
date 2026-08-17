@@ -10,58 +10,6 @@ import (
 	"unicode/utf8"
 )
 
-// Basic JSON token types for scanning.
-const (
-	// ObjectStart `{` - the object start.
-	ObjectStart byte = '{'
-	// ObjectEnd `}` - the object end.
-	ObjectEnd byte = '}'
-	// ArrayStart `[` - the array start.
-	ArrayStart byte = '['
-	// ArrayEnd `]` - the array end.
-	ArrayEnd byte = ']'
-	// Comma `,` - the literal comma.
-	Comma byte = ','
-	// Colon `:` - the literal colon.
-	Colon byte = ':'
-	// Space ` ` - a white space token.
-	Space byte = ' '
-	// Comment `/` - a single-line comment token (`//`).
-	Comment byte = '/'
-	// CommentMulti `*` - a multi-line comment token (`/*...*/`).
-	CommentMulti byte = '*'
-	// Escape `\` - a backslash escape token.
-	Escape byte = '\\'
-	// Quote `'` - a single quote string token.
-	Quote byte = '\''
-	// String `"` - a double quote string token.
-	String byte = '"'
-	// True `t` - the literal true token.
-	True byte = 't'
-	// False `f` - the literal false token.
-	False byte = 'f'
-	// Null `n` - the literal null token.
-	Null byte = 'n'
-)
-
-// Special JSON token types for scanning.
-const (
-	// NaN `N` - the literal NaN token.
-	NaN byte = 'N'
-	// Infinity `I` - the literal Infinity token.
-	Infinity byte = 'I'
-	// Integer `i` - the literal integer token.
-	Integer byte = 'i'
-	// Decimal `d` - the literal decimal token.
-	Decimal byte = 'd'
-	// Complex `c` - the literal complex token.
-	Complex byte = 'c'
-	// HexaDecimal `x` - the literal hexadecimal token.
-	HexaDecimal byte = 'x'
-	// EOF `\0` - the end of a token stream.
-	EOF byte = 0x00
-)
-
 // Character types for JSON scanning.
 const (
 	// Base types.
@@ -159,9 +107,15 @@ var keywords = [256][]byte{
 // Scanner implements a relaxed JSON5 scanner producing a stream of tokens
 // from an underlying io.Reader.
 type Scanner struct {
-	reader    Reader
-	offset    int
-	imaginary bool
+	// The underlying JSON5 reader.
+	reader Reader
+	// The mode used for scanning.
+	mode Mode
+
+	// offset is the current scanner offset in the reader window.
+	offset int
+	// iscomplex indicates if the current number token is a complex number.
+	iscomplex bool
 }
 
 // NewScanner returns a new Scanner reading from the supplied `io.Reader` using
@@ -170,7 +124,17 @@ type Scanner struct {
 // The []byte slices reference the internal buffer of the Scanner and are valid
 // until the next call to `Next`.
 func NewScanner(reader io.Reader, buffer []byte) *Scanner {
-	return &Scanner{reader: *NewReader(buffer, reader)}
+	return &Scanner{
+		reader: *NewReader(buffer, reader),
+		mode:   Relaxed | Extended,
+	}
+}
+
+// Mode sets the mode used for scanning and reading.
+func (s *Scanner) Mode(mode Mode) *Scanner {
+	s.reader.Mode(mode)
+	s.mode = mode
+	return s
 }
 
 // Position returns the current scanner stream position. When used with
@@ -214,7 +178,9 @@ func (s *Scanner) Error() error {
 //
 // Note: Due to the relaxed nature of the parser allowing to write strings
 // without quotes, the scanner skips empty strings unless explicitly quoted.
-func (s *Scanner) Next() (byte, []byte) {
+func (s *Scanner) Next(ctx ScanContext) (byte, []byte) {
+	_ = ctx
+
 	if skip := s.skip(0); skip != 0 {
 		s.reader.advance(skip)
 	}
@@ -247,7 +213,11 @@ func (s *Scanner) Next() (byte, []byte) {
 		return s.commit(s.quoted(char))
 	}
 
-	return s.commit(s.relaxed())
+	if s.mode&Relaxed != 0 {
+		return s.commit(s.relaxed())
+	}
+
+	return EOF, nil
 }
 
 // Next_ returns the next lexical token in the stream consisting of a token
@@ -283,7 +253,9 @@ func (s *Scanner) Next() (byte, []byte) {
 // Next_ is a variant of `Next` that calculates the token location in the
 // stream, without the need to manually track newlines and escapes in the
 // stream. However, this comes with a performance cost of roughly 20%.
-func (s *Scanner) Next_() (byte, []byte) {
+func (s *Scanner) Next_(ctx ScanContext) (byte, []byte) {
+	_ = ctx
+
 	offset, line, char, token := s.space_()
 	if offset != 0 {
 		return s.commit_(Space, token, offset, line, char)
@@ -322,7 +294,11 @@ func (s *Scanner) Next_() (byte, []byte) {
 		return s.commit_(s.quoted_(ch))
 	}
 
-	return s.commit_(s.relaxed_())
+	if s.mode&Relaxed != 0 {
+		return s.commit_(s.relaxed_())
+	}
+
+	return EOF, nil
 }
 
 // commit is a convenience function that advances the reader by the given
@@ -590,9 +566,9 @@ func (s *Scanner) keyword(ch byte) (offset, skip int) {
 		return s.token(1, _NaN_[1:])
 	} else if ch == 'I' {
 		return s.token(1, _Infinity_[1:])
-	} else {
-		return 0, 0
 	}
+
+	return 0, 0
 }
 
 // keywordx checks for JSON keywords using a lookup table instead of a switch
@@ -1019,7 +995,7 @@ next:
 	}
 }
 
-// complex is a helper method that handles the additional imaginary  part of a
+// complex is a helper method that handles the additional imaginary part of a
 // complex number following a real part. The function adds a imaginary flag to
 // the scanner to mark the real part of the complex number. If the imaginary
 // part is successfully parsed, the function returns the complex token type and
@@ -1029,17 +1005,18 @@ next:
 func (s *Scanner) complex(
 	offset int, window []byte,
 ) (byte, int, int) {
-	if s.imaginary {
+	if s.mode&Extended == 0 || s.iscomplex {
 		return EOF, 0, 0
 	}
 
-	s.imaginary = true
+	s.iscomplex = true
 	ch, offset, skip := s.number(offset, window)
-	s.imaginary = false
+	s.iscomplex = false
 
 	if ch == Complex {
 		return Complex, offset, skip
 	}
+
 	return EOF, 0, 0
 }
 
@@ -1115,6 +1092,7 @@ next:
 					state = complex
 					goto advance
 				}
+
 				return EOF, 0, 0
 			} else if state == digit2 {
 				if mask&digit != 0 {
@@ -1128,6 +1106,7 @@ next:
 					state = complex
 					goto advance
 				}
+
 				return EOF, 0, 0
 			} else if state == digit3 {
 				if mask&digit != 0 {
@@ -1138,11 +1117,13 @@ next:
 					state = complex
 					goto advance
 				}
+
 				return EOF, 0, 0
 			} else if state == hex1 {
 				if mask&hex != 0 {
 					goto advance
 				}
+
 				return EOF, 0, 0
 			} else if state == zero {
 				if ch == '.' {
@@ -1160,6 +1141,7 @@ next:
 					state = complex
 					goto advance
 				}
+
 				return EOF, 0, 0
 			} else if state == begin {
 				if mask&digit != 0 {
@@ -1188,12 +1170,14 @@ next:
 					state = complex
 					goto advance
 				}
+
 				return EOF, 0, 0
 			} else if state == dot1 {
 				if mask&digit != 0 {
 					state = digit2
 					goto advance
 				}
+
 				return EOF, 0, 0
 			} else if state == exp1 {
 				if mask&sign != 0 {
@@ -1203,12 +1187,14 @@ next:
 					state = digit3
 					goto advance
 				}
+
 				return EOF, 0, 0
 			} else if state == expsign1 {
 				if mask&digit != 0 {
 					state = digit3
 					goto advance
 				}
+
 				return EOF, 0, 0
 			}
 
@@ -1246,17 +1232,18 @@ next:
 func (s *Scanner) complexx(
 	offset int, window []byte,
 ) (byte, int, int) {
-	if s.imaginary {
+	if s.mode&Extended == 0 || s.iscomplex {
 		return EOF, 0, 0
 	}
 
-	s.imaginary = true
+	s.iscomplex = true
 	ch, offset, skip := s.numberx(offset, window)
-	s.imaginary = false
+	s.iscomplex = false
 
 	if ch == Complex {
 		return Complex, offset, skip
 	}
+
 	return EOF, 0, 0
 }
 
@@ -1338,6 +1325,7 @@ next:
 					state = complex
 					break
 				}
+
 				return EOF, 0, 0
 
 			case digit1:
@@ -1362,6 +1350,7 @@ next:
 					state = complex
 					break
 				}
+
 				return EOF, 0, 0
 
 			case dot1:
@@ -1369,6 +1358,7 @@ next:
 					state = digit2
 					break
 				}
+
 				return EOF, 0, 0
 
 			case digit2:
@@ -1397,6 +1387,7 @@ next:
 					state = digit3
 					break
 				}
+
 				return EOF, 0, 0
 
 			case digit3:
@@ -1408,6 +1399,7 @@ next:
 					state = complex
 					break
 				}
+
 				return EOF, 0, 0
 
 			case hex1:
@@ -1415,6 +1407,7 @@ next:
 					kind == number || ch == 'f') {
 					break
 				}
+
 				return EOF, 0, 0
 			}
 
@@ -1445,7 +1438,7 @@ next:
 	}
 }
 
-// complexy is a helper method that handles the additional imaginary  part of a
+// complexy is a helper method that handles the additional imaginary part of a
 // complex number following a real part. The function adds a imaginary flag to
 // the scanner to mark the real part of the complex number. If the imaginary
 // part is successfully parsed, the function returns the complex token type and
@@ -1457,17 +1450,18 @@ next:
 func (s *Scanner) complexy(
 	offset int, window []byte,
 ) (byte, int, int) {
-	if s.imaginary {
+	if s.mode&Extended == 0 || s.iscomplex {
 		return EOF, 0, 0
 	}
 
-	s.imaginary = true
+	s.iscomplex = true
 	ch, offset, skip := s.numbery(offset, window)
-	s.imaginary = false
+	s.iscomplex = false
 
 	if ch == Complex {
 		return Complex, offset, skip
 	}
+
 	return EOF, 0, 0
 }
 
@@ -1540,6 +1534,7 @@ next:
 					state = complex
 					goto advance
 				}
+
 				return EOF, 0, 0
 			} else if state == digit2 {
 				if mask&(number|digit) == number|digit {
@@ -1553,6 +1548,7 @@ next:
 					state = complex
 					goto advance
 				}
+
 				return EOF, 0, 0
 			} else if state == digit3 {
 				if mask&(number|digit) == number|digit {
@@ -1563,12 +1559,14 @@ next:
 					state = complex
 					goto advance
 				}
+
 				return EOF, 0, 0
 			} else if state == hex1 {
 				if mask&hex != 0 && (kind == 0 ||
 					kind == number || ch == 'f') {
 					goto advance
 				}
+
 				return EOF, 0, 0
 			} else if state == zero {
 				if ch == '.' {
@@ -1586,6 +1584,7 @@ next:
 					state = complex
 					goto advance
 				}
+
 				return EOF, 0, 0
 			} else if state == begin {
 				if mask&(number|digit) == number|digit {
@@ -1614,12 +1613,14 @@ next:
 					state = complex
 					goto advance
 				}
+
 				return EOF, 0, 0
 			} else if state == dot1 {
 				if mask&(number|digit) == number|digit {
 					state = digit2
 					goto advance
 				}
+
 				return EOF, 0, 0
 			} else if state == exp1 {
 				if mask&(number|sign) == number|sign {
@@ -1629,12 +1630,14 @@ next:
 					state = digit3
 					goto advance
 				}
+
 				return EOF, 0, 0
 			} else if state == expsign1 {
 				if mask&(number|digit) == number|digit {
 					state = digit3
 					goto advance
 				}
+
 				return EOF, 0, 0
 			}
 
@@ -1666,17 +1669,18 @@ next:
 func (s *Scanner) complexz(
 	offset int, window []byte,
 ) (byte, int, int) {
-	if s.imaginary {
+	if s.mode&Extended == 0 || s.iscomplex {
 		return EOF, 0, 0
 	}
 
-	s.imaginary = true
+	s.iscomplex = true
 	ch, offset, skip := s.numberz(offset, window)
-	s.imaginary = false
+	s.iscomplex = false
 
 	if ch == Complex {
 		return Complex, offset, skip
 	}
+
 	return EOF, 0, 0
 }
 
