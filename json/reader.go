@@ -307,7 +307,7 @@ func (r *Reader) extend() int {
 	if r.mode&Retain == Retain {
 		if cap(r.buffer)-len(r.buffer) < r.min {
 			// Otherwise, we must allocate/extend a new buffer
-			buffer := make([]byte, max(cap(r.buffer)*2, r.new))
+			buffer := make([]byte, len(r.buffer), max(cap(r.buffer)*2, r.new))
 			copy(buffer, r.buffer)
 			r.buffer = buffer
 		}
@@ -324,7 +324,7 @@ func (r *Reader) extend() int {
 				copy(r.buffer, r.buffer[r.offset:])
 			} else {
 				// otherwise, we must allocate/extend a new buffer
-				buffer := make([]byte, max(cap(r.buffer)*2, r.new))
+				buffer := make([]byte, len(r.buffer), max(cap(r.buffer)*2, r.new))
 				copy(buffer, r.buffer[r.offset:])
 				r.buffer = buffer
 			}

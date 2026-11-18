@@ -1,6 +1,7 @@
 package json
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -489,9 +490,26 @@ func (d *Decoder) stateValue() (byte, []byte, error) {
 	}
 }
 
-// stateEnd is the state function for parsing after the end of the JSON
-// document. It always returns EOF.
-func (*Decoder) stateEnd() (byte, []byte, error) { return EOF, nil, io.EOF }
+// stateEnd validates the end of the JSON document, allowing only trailing
+// whitespace and comments.
+func (d *Decoder) stateEnd() (byte, []byte, error) {
+	typ, token := d.scanner.Next(RootEnd)
+	if typ != EOF {
+		return 0, nil, NewErrState(
+			"root end", d.scanner.Position(), typ, token)
+	}
+
+	err := d.scanner.Error()
+	if errors.Is(err, io.EOF) {
+		return EOF, nil, io.EOF
+	}
+	if err != nil {
+		return 0, nil, fmt.Errorf("scanner error: %w", err)
+	}
+
+	return 0, nil, NewErrState(
+		"root end", d.scanner.Position(), EOF, nil)
+}
 
 //
 // Decoder functions for decoding JSON values into Go values. These functions
@@ -618,7 +636,7 @@ func (d *Decoder) decodeValueToken(
 
 	case Null:
 		switch v.Kind() {
-		case reflect.Pointer, reflect.Map, reflect.Slice:
+		case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Interface:
 			v.Set(reflect.Zero(v.Type()))
 
 			return nil
@@ -651,7 +669,10 @@ func (d *Decoder) decodeValueToken(
 				return NewErrDecode("number",
 					d.scanner.Position(), typ, token, v.Type(), nil)
 			}
-			num, _ := strconv.ParseFloat(viewString(token), 64)
+			num, err := d.decodeNumberAny(typ, token)
+			if err != nil {
+				return err
+			}
 			v.Set(reflect.ValueOf(num))
 
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
@@ -686,16 +707,20 @@ func (d *Decoder) decodeValueToken(
 		return nil
 
 	case HexaDecimal:
-		num, _ := strconv.ParseInt(viewString(token), 0, 64)
 		switch v.Kind() {
 		case reflect.Interface:
 			if v.NumMethod() > 0 {
 				return NewErrDecode("hexa-decimal number",
 					d.scanner.Position(), typ, token, v.Type(), nil)
 			}
-			v.Set(reflect.ValueOf(float64(num)))
+			value, err := d.decodeNumberAny(typ, token)
+			if err != nil {
+				return err
+			}
+			v.Set(reflect.ValueOf(value))
 
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			num, _ := strconv.ParseInt(viewString(token), 0, 64)
 			if v.OverflowInt(num) {
 				return NewErrDecode("hexa-decimal number int overflow",
 					d.scanner.Position(), typ, token, v.Type(), nil)
@@ -703,6 +728,7 @@ func (d *Decoder) decodeValueToken(
 			v.SetInt(num)
 
 		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			num, _ := strconv.ParseInt(viewString(token), 0, 64)
 			if num < 0 || v.OverflowUint(uint64(num)) {
 				return NewErrDecode("hexa-decimal number uint overflow",
 					d.scanner.Position(), typ, token, v.Type(), nil)
@@ -710,6 +736,7 @@ func (d *Decoder) decodeValueToken(
 			v.SetUint(uint64(num))
 
 		case reflect.Float64, reflect.Float32:
+			num, _ := strconv.ParseInt(viewString(token), 0, 64)
 			v.SetFloat(float64(num))
 		default:
 			return NewErrDecode("hexa-decimal number type",
@@ -802,12 +829,73 @@ func (d *Decoder) decodeValueToken(
 	}
 }
 
+// decodeNumberAny decodes a JSON number token into an any value, handling
+// integers, decimals, and hexadecimal numbers. It returns the decoded value
+// or an error if the token cannot be parsed correctly.
+func (d *Decoder) decodeNumberAny(typ byte, token []byte) (any, error) {
+	if d.mode&Precise != 0 {
+		return d.decodeNumberPrecise(typ, token)
+	}
+
+	text := viewString(token)
+	if typ == HexaDecimal {
+		num, err := strconv.ParseInt(text, 0, 64)
+		if err != nil {
+			return nil, NewErrDecode("hexa-decimal number",
+				d.scanner.Position(), typ, token, nil, nil)
+		}
+
+		return float64(num), nil
+	}
+
+	num, err := strconv.ParseFloat(text, 64)
+	if err != nil {
+		msg := "number integer"
+		if typ == Decimal {
+			msg = "number decimal"
+		}
+
+		return nil, NewErrDecode(msg,
+			d.scanner.Position(), typ, token, nil, nil)
+	}
+
+	return num, nil
+}
+
+// decodeNumberPrecise decodes a JSON number token into an any value with
+// precise representation using big.Int or big.Float. It returns the decoded
+// value or an error if the token cannot be parsed correctly.
+func (d *Decoder) decodeNumberPrecise(
+	typ byte, token []byte,
+) (any, error) {
+	text := viewString(token)
+	if typ == Decimal {
+		num, ok := new(big.Float).SetString(text)
+		if !ok {
+			return nil, NewErrDecode("number decimal",
+				d.scanner.Position(), typ, token, nil, nil)
+		}
+
+		return num, nil
+	}
+
+	base, msg := 10, "number integer"
+	if typ == HexaDecimal {
+		base, msg = 0, "hexa-decimal number"
+	}
+	num, ok := new(big.Int).SetString(text, base)
+	if !ok {
+		return nil, NewErrDecode(msg,
+			d.scanner.Position(), typ, token, nil, nil)
+	}
+
+	return num, nil
+}
+
 // decodeValueAny decodes the next JSON value from the input stream and returns
 // it as an any. This is used for decoding into interface{} values, where the
 // type of the value is not known in advance. The function is responsible for
 // recursively decoding nested objects and arrays.
-//
-//nolint:cyclop,funlen // prioritize speed.
 func (d *Decoder) decodeValueAny() (any, error) {
 	typ, token, err := d.state(d)
 	if err != nil {
@@ -829,32 +917,8 @@ func (d *Decoder) decodeValueAny() (any, error) {
 		//nolint:nilnil // compatibility with encoding/json.
 		return nil, nil
 
-	case Integer:
-		num := &big.Int{}
-		if _, ok := num.SetString(viewString(token), 10); !ok {
-			return nil, NewErrDecode("number integer",
-				d.scanner.Position(), typ, token, nil, nil)
-		}
-
-		return num, nil
-
-	case Decimal:
-		num := &big.Float{}
-		if _, ok := num.SetString(viewString(token)); !ok {
-			return nil, NewErrDecode("number decimal",
-				d.scanner.Position(), typ, token, nil, nil)
-		}
-
-		return num, nil
-
-	case HexaDecimal:
-		num := &big.Int{}
-		if _, ok := num.SetString(viewString(token), 0); !ok {
-			return nil, NewErrDecode("hexa-decimal number",
-				d.scanner.Position(), typ, token, nil, nil)
-		}
-
-		return num, nil
+	case Integer, Decimal, HexaDecimal:
+		return d.decodeNumberAny(typ, token)
 
 	case Complex: // TODO: check optimal type for complex numbers.
 		num, err := strconv.ParseComplex(
@@ -1030,7 +1094,7 @@ func (d *Decoder) decodeArray(v reflect.Value) error {
 // type of the value is not known in advance. The function is responsible for
 // recursively decoding nested objects and arrays.
 //
-//nolint:gocognit,cyclop,funlen // prioritize speed.
+//nolint:gocognit,funlen // prioritize speed.
 //revive:disable-next-line:cyclomatic // prioritize speed.
 //revive:disable-next-line:cognitive-complexity // prioritize speed.
 func (d *Decoder) decodeSliceAny() ([]any, error) {
@@ -1064,27 +1128,10 @@ func (d *Decoder) decodeSliceAny() ([]any, error) {
 		case Null:
 			s = append(s, nil)
 
-		case Integer:
-			num := &big.Int{}
-			if _, ok := num.SetString(viewString(token), 10); !ok {
-				return nil, NewErrDecode("number integer",
-					d.scanner.Position(), typ, token, nil, nil)
-			}
-			s = append(s, num)
-
-		case Decimal:
-			num := &big.Float{}
-			if _, ok := num.SetString(viewString(token)); !ok {
-				return nil, NewErrDecode("number decimal",
-					d.scanner.Position(), typ, token, nil, nil)
-			}
-			s = append(s, num)
-
-		case HexaDecimal:
-			num := &big.Int{}
-			if _, ok := num.SetString(viewString(token), 0); !ok {
-				return nil, NewErrDecode("hexa-decimal number",
-					d.scanner.Position(), typ, token, nil, nil)
+		case Integer, Decimal, HexaDecimal:
+			num, err := d.decodeNumberAny(typ, token)
+			if err != nil {
+				return nil, err
 			}
 			s = append(s, num)
 

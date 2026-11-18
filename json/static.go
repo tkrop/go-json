@@ -2,6 +2,8 @@ package json
 
 import (
 	"bytes"
+	"errors"
+	"io"
 )
 
 // Unmarshal parses the JSON-encoded data and stores the result in the value
@@ -14,6 +16,16 @@ import (
 // the documentation for Marshal for details about the conversion between Go
 // values and JSON.
 func Unmarshal(data []byte, value any) error {
-	return NewDecoderSource(bytes.NewReader(data),
-		make([]byte, 0, len(data))).Decode(value)
+	decoder := NewDecoderSource(
+		bytes.NewReader(data), make([]byte, 0, len(data)))
+	if err := decoder.Decode(value); err != nil {
+		return err
+	}
+
+	_, _, err := decoder.Next()
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+
+	return err
 }

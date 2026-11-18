@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"reflect"
 	"runtime"
 	"strconv"
 	"testing"
@@ -21,6 +20,8 @@ import (
 const (
 	// Mock mode enables testing using the mock scanner.
 	Mock Mode = 0x0004
+	// Error mode enables testing error scenarios.
+	Error Mode = 0x0008
 )
 
 // Token represents a scanned Token with its type and value.
@@ -84,27 +85,6 @@ func (s *Wrapper) Position() Position {
 func (s *Wrapper) Validate() {
 	assert.Equal(s.t, len(s.tokens), s.tindex, "not all tokens were consumed")
 	assert.Equal(s.t, len(s.pos), s.pindex, "not all positions were consumed")
-}
-
-// copyShallow creates a shallow copy of the given value if it is a non-nil
-// pointer. For maps, it initializes a new empty map. Otherwise, it returns
-// the original value.
-func copyShallow(value any) any {
-	if value == nil {
-		return nil
-	}
-
-	val := reflect.ValueOf(value)
-	if val.Kind() != reflect.Pointer || val.IsNil() {
-		return value
-	}
-
-	copy := reflect.New(val.Type().Elem())
-	if copy.Elem().Kind() == reflect.Map {
-		copy.Elem().Set(reflect.MakeMap(copy.Elem().Type()))
-	}
-
-	return copy.Interface()
 }
 
 // fileParams holds scanner token, delimiter, byte, and scanner whitespace

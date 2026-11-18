@@ -1171,6 +1171,18 @@ var scanTestCases = map[string]scanParams{
 			{Byte: 5, Line: 0, Char: 5},
 		},
 	},
+	"number-complex-first-no-sign": {
+		input: "i386,", mode: Relaxed | Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: Plain, token: "i386"},
+			{ctx: RootValue, typ: Comma, token: ","},
+		},
+		pos: []Position{
+			{Byte: 4, Line: 0, Char: 4},
+			{Byte: 5, Line: 0, Char: 5},
+			{Byte: 5, Line: 0, Char: 5},
+		},
+	},
 	"number-complex-terminal-numeric": {
 		input: "1+2+3i,", mode: Extended,
 		expect: []Token{{ctx: RootValue, typ: EOF, token: ""}},
@@ -2935,7 +2947,7 @@ func benchmarkScanFile(
 		Prefix("method=" + name + "/test=").
 		Benchmark(func(b *testing.B, param fileParams) func(*testing.B) {
 			// Setup
-			buffer := make([]byte, size)
+			buffer := make([]byte, 0, size)
 			reader := getFixtureReader(b, param.name)
 			scanner := scanner{}
 

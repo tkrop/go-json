@@ -356,7 +356,7 @@ var extendTestCases = map[string]extendParams{
 	},
 	"compact-before-read": {
 		reader: NewReaderState(func() []byte {
-			buffer := fillBuffer(9, 16, 'x')
+			buffer := fillBuffer(9, 16, 'y')
 			copy(buffer[6:], []byte("abc"))
 
 			return buffer
@@ -369,14 +369,14 @@ var extendTestCases = map[string]extendParams{
 	},
 	"grow-before-read": {
 		reader: NewReaderState(func() []byte {
-			buffer := fillBuffer(9, 13, 'x')
+			buffer := fillBuffer(9, 13, 'z')
 			copy(buffer[1:], []byte("mno"))
 
 			return buffer
 		}(), Evict, 4, 8, NewState(1, 6, 1, 2), nil),
-		steps: []step{{data: "z", err: io.EOF}},
+		steps: []step{{data: "y", err: io.EOF}},
 		expect: NewReaderState(func() []byte {
-			return []byte("mnoxxxxxz")
+			return []byte("mnozzzzzy")
 		}(), Evict, 4, 8, NewState(0, 6, 1, 2), io.EOF),
 		num: 1,
 	},
@@ -400,20 +400,15 @@ var extendTestCases = map[string]extendParams{
 	},
 	"grow-only-mode-grow-copies-full-buffer": {
 		reader: NewReaderState(func() []byte {
-			buffer := fillBuffer(9, 13, 'x')
+			buffer := fillBuffer(9, 13, 'a')
 			copy(buffer[1:], []byte("mno"))
 
 			return buffer
 		}(), Retain, 4, 8, NewState(1, 2, 0, 2), nil),
 		steps: []step{{data: "z", err: io.EOF}},
-		expect: NewReaderState(func() []byte {
-			buffer := fillBuffer(26, 26, 0)
-			copy(buffer, []byte("xmnoxxxxx"))
-
-			return buffer
-		}(),
+		expect: NewReaderState([]byte("amnoaaaaaz"),
 			Retain, 4, 8, NewState(1, 2, 0, 2), io.EOF),
-		num: 0,
+		num: 1,
 	},
 }
 
@@ -423,7 +418,7 @@ func TestExtend(t *testing.T) {
 	test.Map(t, extendTestCases).
 		Run(func(t test.Test, param extendParams) {
 			// Given
-			reader := param.reader
+			reader := copyReader(param.reader)
 			reader.reader = &stepReader{steps: param.steps}
 
 			// When
@@ -517,7 +512,7 @@ func TestSkip(t *testing.T) {
 	test.Map(t, skipTestCases).
 		Run(func(t test.Test, param skipParams) {
 			// Given
-			reader := param.reader
+			reader := copyReader(param.reader)
 			reader.reader = &stepReader{steps: param.steps}
 
 			// When
@@ -587,7 +582,7 @@ func TestCompare(t *testing.T) {
 	test.Map(t, compareTestCases).
 		Run(func(t test.Test, param compareParams) {
 			// Given
-			reader := param.reader
+			reader := copyReader(param.reader)
 			reader.reader = &stepReader{steps: param.steps}
 
 			// When

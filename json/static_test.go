@@ -43,6 +43,27 @@ var unmarshalTestCases = map[string]unmarshalParams{
 	"bool": {
 		input: `true`, output: new(bool), expect: test.Ptr(true),
 	},
+	"trailing-space-comment": {
+		input: "true \n/* comment */\t", output: new(bool),
+		expect: test.Ptr(true),
+	},
+	"trailing-value": {
+		input: `{}[]`, output: &map[string]any{},
+		error: &DecodeError{
+			Msg: "root end", Pos: Position{Byte: 3},
+			Typ: ArrayStart, Token: "[",
+		},
+	},
+	"trailing-garbage": {
+		input: `"ok" garbage`, output: new(string),
+		error: &DecodeError{
+			Msg: "root end", Pos: Position{Byte: 12},
+			Typ: Plain, Token: "garbage",
+		},
+	},
+	"imaginary-prefix-string": {
+		input: `i386`, output: new(string), expect: test.Ptr("i386"),
+	},
 	"hex-int": {
 		input: `0x10`, output: new(int), expect: test.Ptr(16),
 	},

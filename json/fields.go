@@ -178,7 +178,7 @@ func SkipDelimiters(name string) string {
 	var builder strings.Builder
 	skipped := false
 
-	for i := range name {
+	for i := range len(name) {
 		if name[i] == '-' || name[i] == '_' {
 			if !skipped {
 				builder.Grow(len(name))

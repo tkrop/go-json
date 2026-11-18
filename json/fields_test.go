@@ -326,6 +326,7 @@ var skipDelimsTestCases = map[string]skipDelimsParams{
 	"underscore": {input: "first_name", expect: "firstname"},
 	"both":       {input: "first-_name", expect: "firstname"},
 	"multiple":   {input: "first-__--name", expect: "firstname"},
+	"unicode":    {input: "first-élève", expect: "firstélève"},
 }
 
 // TestSkipDelims checks delimiter removal and unchanged-name behavior.

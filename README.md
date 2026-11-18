@@ -71,24 +71,25 @@ compatible interface it produces many essential but also subtle differences.
 Currently, the parser supports the [JSON5][json5] specification with braces,
 brackets, commas, colons, and all other [JSON5 features][json5-features]:
 
-* Single and double quoted keys in objects.
+* Unquoted keys in objects.
+* Single and double quoted keys and values in objects and arrays.
 * Escape sequences in strings, including `\n`, `\t`, `\\`, etc.
 * Single-line (`//`) and multi-line (`/* ... */`) comments.
 * Integer, decimal, and hexadecimal numbers (e.g., `42`, `3.14`, `0x1E`).
 * Unicode escape sequences in strings (e.g., `\u{1F600}`, `\U0X1F4A9`).
 
-Besides, the parser also supports the following extra _relaxed_ and
+Besides, the scanner also supports the following extra _relaxed_ and
 _extended_ features:
 
-* Unquoted string keys and values in objects and arrays, that are not reserved
-  keywords (`true`, `false`, `null`, `NaN`, `Infinity`), and do not contain any
-  leading or trailing whitespace or special characters.
-* Missing object values and empty root input, which decode to the zero value of
-  the target type (e.g., a `bool` field `enabled` decodes to `false`).
-* Complex numbers in values (e.g., `1+2i`, `3e-5+4.2e2i`).
+* Unquoted values in objects and arrays stripped of leading and trailing
+  whitespace. Can not be one of the reserved keywords (`true`, `false`, `null`,
+  `NaN`, and `Infinity`),
+* Missing object values and empty inputs decode automatically into zero values
+  of the target type (e.g., a `bool` field `enabled` decodes to `false`).
+* Complex number values (e.g., `1+2i`, `3e-5.2+4.2e2i`).
 
 Based on these additional features, the input can end up looking more like a
-[`yaml`][yaml] document with terminal commas, square and curly brackets instead
+[YAML][yaml] document with terminal commas, square and curly brackets instead
 a strict [JSON5][json5] document, but the parser will still scan all elements
 correctly. While the _relaxed_ and _extended_ parsing is the default, these
 features can be disabled, so that the parser will only accept strict
@@ -126,13 +127,15 @@ components:
   and without tracking of line and character position - the first is roughly
   20% slower as the latter. In addition, the `Scanner` supports multiple modes:
 
-  * **`Strict` --** A strict `JSON5` parsing mode following the standard.
+  * **`Strict` --** A strict `JSON5` parsing mode following strictly the
+    [JSON5 Standard][json5-spec] (currently incorrectly implemented and not
+    fully compliant, see [ISSUES.md](ISSUES.md)).
   * **`Relaxed` --** A relaxed `JSON5` parsing mode with more lenient rules
-    enabling unquoted keys as well as omitted zero keys and values.
+    enabling unquoted values as well as omitted zero keys and values.
   * **`Extended` --** An extended `JSON5` parsing mode, currently only
     supporting complex numbers.
   * **`Json` --** A strict `JSON` parsing mode for compatibility with the JSON
-    standard (not well tested yet).
+    standard (currently not correctly enforced, see [ISSUES.md](ISSUES.md)).
 
   To support omitted zero keys and values, the scanner needs to be aware of
   the context in which a token appears, effecting the provided interface.
@@ -177,6 +180,8 @@ components:
 **Warning:** While the basic architecture is designed to be modular and very
 flexible, many of the components are still under heavy development and do not
 have a stable interface nor provide the full functionality, yet.
+
+[json5-spec]: <https://spec.json5.org/>
 
 
 ## Future plans

@@ -1162,6 +1162,9 @@ func (s *scanner) complex(
 ) (byte, int, int) {
 	if s.iscomplex {
 		return EOF, 0, 0
+	} else if imaginary &&
+		window[offset] != '+' && window[offset] != '-' {
+		return EOF, 0, 0
 	}
 
 	s.iscomplex = true

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"math/big"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/huandu/go-clone"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tkrop/go-testing/mock"
@@ -139,6 +141,9 @@ func DecodeMode(mode ...Mode) test.FilterFunc[decDecodeParams] {
 	}
 }
 
+// CallScannerGetMode sets up the expectation for the GetMode method of the
+// scanner mock. It returns the specified mode when the GetMode method is
+// called.
 func CallScannerGetMode(mode Mode) mock.SetupFunc {
 	return func(mocks *mock.Mocks) any {
 		scanner := mock.Get(mocks, NewMockScanner)
@@ -147,6 +152,9 @@ func CallScannerGetMode(mode Mode) mock.SetupFunc {
 	}
 }
 
+// CallScannerSetMode sets up the expectation for the SetMode method of the
+// scanner mock. It expects the specified mode to be set and returns the
+// scanner.
 func CallScannerSetMode(mode Mode) mock.SetupFunc {
 	return func(mocks *mock.Mocks) any {
 		scanner := mock.Get(mocks, NewMockScanner)
@@ -155,6 +163,8 @@ func CallScannerSetMode(mode Mode) mock.SetupFunc {
 	}
 }
 
+// CallScannerNext sets up the expectation for the Next method of the scanner
+// mock. It returns the specified token when the Next method is called.
 func CallScannerNext(token Token) mock.SetupFunc {
 	return func(mocks *mock.Mocks) any {
 		scanner := mock.Get(mocks, NewMockScanner)
@@ -164,11 +174,24 @@ func CallScannerNext(token Token) mock.SetupFunc {
 	}
 }
 
+// CallScannerPosition sets up the expectation for the Position method of the
+// scanner mock. It returns the specified position when the Position method is
+// called.
 func CallScannerPosition(pos Position) mock.SetupFunc {
 	return func(mocks *mock.Mocks) any {
 		scanner := mock.Get(mocks, NewMockScanner)
 
 		return scanner.EXPECT().Position().Return(pos).Times(1)
+	}
+}
+
+// CallScannerError sets up the expectation for the Error method of the scanner
+// mock. It returns the specified error when the Error method is called.
+func CallScannerError(err error) mock.SetupFunc {
+	return func(mocks *mock.Mocks) any {
+		scanner := mock.Get(mocks, NewMockScanner)
+
+		return scanner.EXPECT().Error().Return(err).Times(1)
 	}
 }
 
@@ -276,6 +299,12 @@ var decDecodeTestCases = map[string]decDecodeParams{
 		output: test.Ptr([]string{"a"}),
 		expect: test.Ptr(([]string)(nil)),
 	},
+	"null-any": {
+		mode: Json, input: `null`,
+		tokens: []Token{{ctx: RootValue, typ: Null, token: "null"}},
+		output: test.Ptr[any](true),
+		expect: test.Ptr[any](nil),
+	},
 
 	// Numeric targets.
 	"float64-any": {
@@ -313,6 +342,68 @@ var decDecodeTestCases = map[string]decDecodeParams{
 		tokens: []Token{{ctx: RootValue, typ: Integer, token: "1"}},
 		output: new(uint),
 		expect: test.Ptr(uint(1)),
+	},
+	"integer-precise-any": {
+		mode:  Json | Precise,
+		input: `9007199254740993`,
+		tokens: []Token{{
+			ctx: RootValue, typ: Integer, token: "9007199254740993",
+		}},
+		output: new(any),
+		expect: test.Ptr[any](big.NewInt(9007199254740993)),
+	},
+	"hexa-decimal-precise-any": {
+		mode:  Strict | Precise,
+		input: `0xFFFFFFFFFFFFFFFF`,
+		tokens: []Token{{
+			ctx: RootValue, typ: HexaDecimal,
+			token: "0xFFFFFFFFFFFFFFFF",
+		}},
+		output: new(any),
+		expect: test.Ptr[any](test.Okay(
+			new(big.Int).SetString("FFFFFFFFFFFFFFFF", 16))),
+	},
+	"object-precise-any": {
+		mode:  Json | Precise,
+		input: `{"integer":9007199254740993,"decimal":1.5}`,
+		tokens: []Token{
+			{ctx: RootValue, typ: ObjectStart, token: "{"},
+			{ctx: ObjectKey, typ: String, token: "integer"},
+			{ctx: ObjectColon, typ: Colon, token: ":"},
+			{
+				ctx: ObjectValue, typ: Integer,
+				token: "9007199254740993",
+			},
+			{ctx: ObjectKey, typ: Comma, token: ","},
+			{ctx: ObjectKey, typ: String, token: "decimal"},
+			{ctx: ObjectColon, typ: Colon, token: ":"},
+			{ctx: ObjectValue, typ: Decimal, token: "1.5"},
+			{ctx: ObjectKey, typ: ObjectEnd, token: "}"},
+		},
+		output: new(any),
+		expect: test.Ptr[any](map[string]any{
+			"integer": big.NewInt(9007199254740993),
+			"decimal": test.Okay((&big.Float{}).SetString("1.5")),
+		}),
+	},
+	"array-precise-any": {
+		mode:  Json | Precise,
+		input: `[9007199254740993,1.5]`,
+		tokens: []Token{
+			{ctx: RootValue, typ: ArrayStart, token: "["},
+			{
+				ctx: ArrayValue, typ: Integer,
+				token: "9007199254740993",
+			},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: Decimal, token: "1.5"},
+			{ctx: ArrayValue, typ: ArrayEnd, token: "]"},
+		},
+		output: new(any),
+		expect: test.Ptr[any]([]any{
+			big.NewInt(9007199254740993),
+			test.Okay((&big.Float{}).SetString("1.5")),
+		}),
 	},
 
 	// Hex numeric target.
@@ -450,6 +541,18 @@ var decDecodeTestCases = map[string]decDecodeParams{
 		output: &structInternalObject{},
 		expect: &structInternalObject{},
 	},
+	"object-unknown-field-null-skip": {
+		mode: Json, input: `{"missing":null}`,
+		tokens: []Token{
+			{ctx: RootValue, typ: ObjectStart, token: "{"},
+			{ctx: ObjectKey, typ: String, token: "missing"},
+			{ctx: ObjectColon, typ: Colon, token: ":"},
+			{ctx: ObjectValue, typ: Null, token: "null"},
+			{ctx: ObjectKey, typ: ObjectEnd, token: "}"},
+		},
+		output: &structInternalObject{},
+		expect: &structInternalObject{},
+	},
 	"object-repeated-nested-struct": {
 		mode: Json,
 		input: `{"first":{"name":"one"},` +
@@ -498,8 +601,8 @@ var decDecodeTestCases = map[string]decDecodeParams{
 		},
 		output: new(any),
 		expect: test.Ptr[any](map[string]any{
-			"a": big.NewInt(1),
-			"b": map[string]any{"c": big.NewInt(2)},
+			"a": float64(1),
+			"b": map[string]any{"c": float64(2)},
 		}),
 	},
 	"object-map-string": {
@@ -542,7 +645,7 @@ var decDecodeTestCases = map[string]decDecodeParams{
 		output: &map[string]any{},
 		expect: &map[string]any{
 			"a": float64(1), "b": false, "c": []any{
-				big.NewInt(1), test.Okay((&big.Float{}).SetString("2.0")), "three",
+				float64(1), float64(2), "three",
 			},
 		},
 	},
@@ -796,7 +899,7 @@ var decDecodeTestCases = map[string]decDecodeParams{
 		output: new(any),
 		expect: test.Ptr[any](map[string]any{
 			"a": true, "b": false, "c": nil, "d": "str",
-			"e": []any{big.NewInt(1)},
+			"e": []any{float64(1)},
 		}),
 	},
 	"object-decimal-any": {
@@ -811,7 +914,7 @@ var decDecodeTestCases = map[string]decDecodeParams{
 		},
 		output: new(any),
 		expect: test.Ptr[any](map[string]any{
-			"n": test.Okay((&big.Float{}).SetString("1.5")),
+			"n": float64(1.5),
 		}),
 	},
 	"object-extended-any": {
@@ -838,7 +941,7 @@ var decDecodeTestCases = map[string]decDecodeParams{
 		},
 		output: new(any),
 		expect: test.Ptr[any](map[string]any{
-			"h": big.NewInt(255), "c": complex(1, 2),
+			"h": float64(255), "c": complex(1, 2),
 			"i": math.Inf(1), "ni": math.Inf(-1),
 		}),
 	},
@@ -1240,16 +1343,11 @@ var decDecodeTestCases = map[string]decDecodeParams{
 			{ctx: ArrayValue, typ: ArrayEnd, token: "]"},
 		},
 		output: new(any),
-		expect: func() any {
-			num := &big.Float{}
-			num.SetString("1.5")
-
-			return test.Ptr[any]([]any{
-				true, false, nil, "str", big.NewInt(1), num,
-				map[string]any{"a": big.NewInt(1)},
-				[]any{big.NewInt(2)},
-			})
-		}(),
+		expect: test.Ptr[any]([]any{
+			true, false, nil, "str", float64(1), float64(1.5),
+			map[string]any{"a": float64(1)},
+			[]any{float64(2)},
+		}),
 	},
 	"array-extended-any": {
 		mode:  Extended,
@@ -1267,7 +1365,7 @@ var decDecodeTestCases = map[string]decDecodeParams{
 		},
 		output: new(any),
 		expect: test.Ptr[any]([]any{
-			big.NewInt(255), complex(1, 2), math.Inf(1), math.Inf(-1),
+			float64(255), complex(1, 2), math.Inf(1), math.Inf(-1),
 		}),
 	},
 
@@ -1410,6 +1508,16 @@ var decDecodeTestCases = map[string]decDecodeParams{
 	},
 
 	// Errors decoding maps.
+	"error-decode-state-end": {
+		mode:  Json | Error,
+		input: `1`,
+		tokens: []Token{
+			{ctx: RootValue, typ: Integer, token: "1"},
+			{ctx: RootEnd, typ: EOF},
+		},
+		output: new(int),
+		error:  fmt.Errorf("scanner error: %w", assert.AnError),
+	},
 	"error-decode-map-value": {
 		mode: Json, input: `{"a":{}}`, output: &map[string]int{},
 		tokens: []Token{
@@ -1505,12 +1613,52 @@ var decDecodeTestCases = map[string]decDecodeParams{
 		error: decodeError("number", Position{Byte: 1},
 			Integer, "1", reflect.TypeOf((*error)(nil)).Elem(), nil),
 	},
+	"error-integer-any-parse": {
+		mode: Mock | Json,
+		tokens: []Token{{
+			ctx: RootValue, typ: Integer, token: "not-an-integer",
+		}},
+		output: new(any),
+		pos:    []Position{{}},
+		error: decodeError("number integer", Position{}, Integer,
+			"not-an-integer", nil, nil),
+	},
+	"error-integer-precise-any-parse": {
+		mode: Mock | Json | Precise,
+		tokens: []Token{{
+			ctx: RootValue, typ: Integer, token: "not-an-integer",
+		}},
+		output: new(any),
+		pos:    []Position{{}},
+		error: decodeError("number integer", Position{}, Integer,
+			"not-an-integer", nil, nil),
+	},
+	"error-decimal-precise-any-parse": {
+		mode: Mock | Json | Precise,
+		tokens: []Token{{
+			ctx: RootValue, typ: Decimal, token: "not-a-decimal",
+		}},
+		output: new(any),
+		pos:    []Position{{}},
+		error: decodeError("number decimal", Position{}, Decimal,
+			"not-a-decimal", nil, nil),
+	},
 	"error-hex-interface-methods": {
 		mode: Strict, input: `0xFF`, output: new(error),
 		tokens: []Token{{ctx: RootValue, typ: HexaDecimal, token: "0xFF"}},
 		pos:    []Position{{Byte: 4}},
 		error: decodeError("hexa-decimal number", Position{Byte: 4},
 			HexaDecimal, "0xFF", reflect.TypeOf((*error)(nil)).Elem(), nil),
+	},
+	"error-hexa-decimal-any-parse": {
+		mode: Mock | Strict,
+		tokens: []Token{{
+			ctx: RootValue, typ: HexaDecimal, token: "0x",
+		}},
+		output: new(any),
+		pos:    []Position{{}},
+		error: decodeError("hexa-decimal number", Position{},
+			HexaDecimal, "0x", nil, nil),
 	},
 	"error-complex-interface-methods": {
 		mode: Extended, input: `1+2i`, output: new(error),
@@ -2016,6 +2164,18 @@ var decDecodeTestCases = map[string]decDecodeParams{
 		output: new([2]int),
 		expect: test.Ptr([2]int{1, 2}),
 	},
+	"array-long-null": {
+		mode: Json, input: `[1,null]`,
+		tokens: []Token{
+			{ctx: RootValue, typ: ArrayStart, token: "["},
+			{ctx: ArrayValue, typ: Integer, token: "1"},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: Null, token: "null"},
+			{ctx: ArrayValue, typ: ArrayEnd, token: "]"},
+		},
+		output: new([1]int),
+		expect: test.Ptr([1]int{1}),
+	},
 	"pointer-array": {
 		mode: Json, input: `[1,2]`,
 		tokens: []Token{
@@ -2037,28 +2197,25 @@ func TestDecDecodeScan(t *testing.T) {
 		// Filter(test.Pattern[decDecodeParams]("object-relaxed-i-key")).
 		Run(func(t test.Test, param decDecodeParams) {
 			// Given
+			scanner := NewScanner(NewBuffer([]byte(param.input)))
+			if param.mode&Error != 0 {
+				scanner = NewScannerSource(&stepReader{
+					steps: []step{{err: assert.AnError}},
+				}, []byte(param.input))
+			}
 			decoder := NewDecoder(NewWrapper(
-				NewScanner(NewBuffer([]byte(param.input))),
-				t, param.tokens, param.pos,
+				scanner, t, param.tokens, param.pos,
 			)).SetMode(IgnoreCase | SkipDelims).SetMode(param.mode)
-			output := copyShallow(param.output)
+			output := clone.Clone(param.output)
 
 			// When
-			var err error
-			var panics any
-			func() {
-				defer func() {
-					panics = recover()
-				}()
-				err = decoder.Decode(output)
-			}()
-
-			if panics == nil {
-				test.Cast[*Wrapper](decoder.scanner).Validate()
+			err := decoder.Decode(output)
+			if err == nil && param.mode&Error != 0 {
+				_, _, err = decoder.Next()
 			}
 
 			// Then
-			require.Nil(t, panics, "unexpected panic")
+			test.Cast[*Wrapper](decoder.scanner).Validate()
 			if param.error != nil {
 				assert.Equal(t, param.error, err)
 			} else if param.check != nil {
@@ -2088,24 +2245,22 @@ func TestDecDecodeMock(t *testing.T) {
 			if errors.As(param.error, &decodeErr) {
 				setup = append(setup, CallScannerPosition(Position{}))
 			}
+			if param.mode&Error != 0 {
+				setup = append(setup, CallScannerError(assert.AnError))
+			}
 			mocks.Expect(mock.Chain(setup...))
 
 			scanner := mock.Get(mocks, NewMockScanner)
 			decoder := NewDecoder(scanner).SetMode(param.mode)
-			output := copyShallow(param.output)
+			output := clone.Clone(param.output)
 
 			// When
-			var err error
-			var panics any
-			func() {
-				defer func() {
-					panics = recover()
-				}()
-				err = decoder.Decode(output)
-			}()
+			err := decoder.Decode(output)
+			if err == nil && param.mode&Error != 0 {
+				_, _, err = decoder.Next()
+			}
 
 			// Then
-			require.Nil(t, panics, "unexpected panic")
 			if param.error != nil {
 				assert.Equal(t, clearPos(param.error), clearPos(err))
 			} else if param.check != nil {
@@ -2118,12 +2273,14 @@ func TestDecDecodeMock(t *testing.T) {
 		})
 }
 
-type errorStringParams struct {
+// TestDecDecodeError tests the error message formatting of DecodeError.
+type decDecodeErrorParams struct {
 	err    *DecodeError
 	expect string
 }
 
-var errorStringTestCases = map[string]errorStringParams{
+// decDecodeErrorTestCases defines test cases for TestDecDecodeError.
+var decDecodeErrorTestCases = map[string]decDecodeErrorParams{
 	"byte-only-position": {
 		err: &DecodeError{
 			Msg:   "number",
@@ -2146,22 +2303,24 @@ var errorStringTestCases = map[string]errorStringParams{
 	},
 }
 
-func TestErrorString(t *testing.T) {
-	test.Map(t, errorStringTestCases).
-		Run(func(t test.Test, param errorStringParams) {
+// TestDecDecodeError tests the error message formatting of DecodeError.
+func TestDecDecodeError(t *testing.T) {
+	test.Map(t, decDecodeErrorTestCases).
+		Run(func(t test.Test, param decDecodeErrorParams) {
 			assert.Equal(t, param.expect, param.err.Error())
 		})
 }
 
-// decoderNextParams holds parameters for TestDecNextToken.
-type decoderNextParams struct {
+// decNextParams holds parameters for TestDecNextToken.
+type decNextParams struct {
 	mode   Mode
 	input  string
 	tokens []Token
 	error  error
 }
 
-var decoderNextTestCases = map[string]decoderNextParams{
+// decNextTestCases defines test cases for TestDecNextToken.
+var decNextTestCases = map[string]decNextParams{
 	// Flat primitive values.
 	"zero": {
 		mode:   Relaxed,
@@ -2182,6 +2341,13 @@ var decoderNextTestCases = map[string]decoderNextParams{
 	"true": {
 		mode: Json, input: `true`,
 		tokens: []Token{{ctx: RootValue, typ: True, token: "true"}},
+	},
+	"string-trailing-invalid": {
+		mode: Json, input: `"ok" @`,
+		tokens: []Token{{ctx: RootValue, typ: String, token: "ok"}},
+		error: &DecodeError{
+			Msg: "root end", Pos: Position{Byte: 5}, Typ: EOF,
+		},
 	},
 	"false": {
 		mode: Json, input: `false`,
@@ -2484,9 +2650,10 @@ var decoderNextTestCases = map[string]decoderNextParams{
 	},
 }
 
-func TestDecoderNext(t *testing.T) {
-	test.Map(t, decoderNextTestCases).
-		Run(func(t test.Test, param decoderNextParams) {
+// TestDecNext tests the Next method of the decoder.
+func TestDecNext(t *testing.T) {
+	test.Map(t, decNextTestCases).
+		Run(func(t test.Test, param decNextParams) {
 			// Given
 			decoder := NewDecoderBuffer([]byte(param.input)).
 				SetMode(param.mode)
