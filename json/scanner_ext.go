@@ -1,8 +1,10 @@
 //nolint:gocognit,gocyclo,cyclop,nestif,funlen,maintidx // priority speed.
-//revive:disable:function-length -- priority speed.
-//revive:disable:cognitive-complexity -- priority speed.
-//revive:disable:max-control-nesting -- priority speed.
-//revive:disable:cyclomatic -- priority speed.
+//revive:disable:function-length // priority speed.
+//revive:disable:function-result-limit // priority speed.
+//revive:disable:cognitive-complexity // priority speed.
+//revive:disable:max-control-nesting // priority speed.
+//revive:disable:confusing-results // priority speed.
+//revive:disable:cyclomatic // priority speed.
 package json
 
 import (
@@ -18,7 +20,7 @@ import (
 //
 // Each range check becomes a single AND + equality, eliminating the second
 // comparison entirely when the first condition fails.
-func (s *Scanner) unicodex(
+func (s *scanner) unicodex(
 	offset int, window []byte,
 ) (rune, int, []byte, bool) {
 	for offset+4 > len(window) {
@@ -65,7 +67,7 @@ func (s *Scanner) unicodex(
 //
 // This keeps the fast path for long plain runs while reducing overhead for
 // dense escape clusters.
-func (s *Scanner) quotedx(quote byte) (byte, []byte, int) {
+func (s *scanner) quotedx(quote byte) (byte, []byte, int) {
 	window := s.reader.window()
 	offset, write := 1, 1
 
@@ -94,6 +96,7 @@ func (s *Scanner) quotedx(quote byte) (byte, []byte, int) {
 			}
 			write += len(chunk)
 			offset = len(window)
+
 			continue
 		}
 
@@ -104,7 +107,7 @@ func (s *Scanner) quotedx(quote byte) (byte, []byte, int) {
 		offset += next
 
 		if window[offset] == quote {
-			return String, window[1:write], offset + 1
+			return quote, window[1:write], offset + 1
 		}
 		offset++ // skip past '\\'
 
@@ -145,7 +148,7 @@ func (s *Scanner) quotedx(quote byte) (byte, []byte, int) {
 			}
 			char := window[offset]
 			if char == quote {
-				return String, window[1:write], offset + 1
+				return quote, window[1:write], offset + 1
 			}
 			if char == Escape {
 				// Decode next escape, then probe again.
@@ -181,6 +184,7 @@ func (s *Scanner) quotedx(quote byte) (byte, []byte, int) {
 			window[write] = char
 			write++
 			offset++
+
 			break
 		}
 	}
@@ -197,7 +201,7 @@ func (s *Scanner) quotedx(quote byte) (byte, []byte, int) {
 //
 // This keeps long plain runs fast while still handling dense escape clusters
 // and accurate position tracking.
-func (s *Scanner) quoted_x(quote byte) (byte, []byte, int, int, int) {
+func (s *scanner) quoted_x(quote byte) (byte, []byte, int, int, int) {
 	window := s.reader.window()
 	offset, write, lines, chars := 1, 1, 0, 1
 
@@ -234,6 +238,7 @@ func (s *Scanner) quoted_x(quote byte) (byte, []byte, int, int, int) {
 
 			write += len(chunk)
 			offset = len(window)
+
 			continue
 		}
 
@@ -257,7 +262,7 @@ func (s *Scanner) quoted_x(quote byte) (byte, []byte, int, int, int) {
 			offset++
 			chars++
 
-			return String, window[1:write], offset, lines, chars
+			return quote, window[1:write], offset, lines, chars
 		}
 
 		offset++ // skip '\\'
@@ -307,7 +312,7 @@ func (s *Scanner) quoted_x(quote byte) (byte, []byte, int, int, int) {
 				offset++
 				chars++
 
-				return String, window[1:write], offset, lines, chars
+				return quote, window[1:write], offset, lines, chars
 			}
 
 			if char == Escape {
@@ -374,7 +379,7 @@ func (s *Scanner) quoted_x(quote byte) (byte, []byte, int, int, int) {
 //
 // This keeps long plain runs fast while handling dense escape clusters
 // efficiently, matching the strategy used by quotedx.
-func (s *Scanner) relaxedx() (byte, []byte, int) {
+func (s *scanner) relaxedx() (byte, []byte, int) {
 	window := s.reader.window()
 	offset, write, last := 0, 0, 0
 
@@ -382,7 +387,7 @@ func (s *Scanner) relaxedx() (byte, []byte, int) {
 		// Bulk phase: find next delimiter, space, or escape.
 		for offset >= len(window) {
 			if s.reader.extend() == 0 {
-				return String, window[:last], offset
+				return Plain, window[:last], offset
 			}
 			window = s.reader.window()
 		}
@@ -396,6 +401,7 @@ func (s *Scanner) relaxedx() (byte, []byte, int) {
 			write += len(chunk)
 			last = trim(window, write)
 			offset = len(window)
+
 			continue
 		}
 
@@ -414,23 +420,26 @@ func (s *Scanner) relaxedx() (byte, []byte, int) {
 			copy(window[write:write+bytes], window[offset:offset+bytes])
 			write += bytes
 			offset += bytes
+
 			continue
 		} else if extend {
 			if s.reader.extend() == 0 {
 				return EOF, nil, 0
 			}
 			window = s.reader.window()
+
 			continue
 		}
 
 		char := window[offset]
 		switch mask[char] & base {
 		case delim:
-			return String, window[:last], offset
+			return Plain, window[:last], offset
 		case space:
 			window[write] = char
 			write++
 			offset++
+
 			continue
 		case escape:
 			offset++ // skip '\\'
@@ -466,7 +475,7 @@ func (s *Scanner) relaxedx() (byte, []byte, int) {
 			for {
 				for offset >= len(window) {
 					if s.reader.extend() == 0 {
-						return String, window[:last], offset
+						return Plain, window[:last], offset
 					}
 					window = s.reader.window()
 				}
@@ -477,18 +486,20 @@ func (s *Scanner) relaxedx() (byte, []byte, int) {
 						window[offset:offset+bytes])
 					write += bytes
 					offset += bytes
+
 					break
 				} else if extend {
 					if s.reader.extend() == 0 {
 						return EOF, nil, 0
 					}
 					window = s.reader.window()
+
 					continue
 				}
 
 				char := window[offset]
 				if mask[char]&base == delim {
-					return String, window[:last], offset
+					return Plain, window[:last], offset
 				}
 				if mask[char]&base == escape {
 					offset++ // skip '\\'
@@ -518,6 +529,7 @@ func (s *Scanner) relaxedx() (byte, []byte, int) {
 						write += 2
 					}
 					last = write
+
 					continue
 				}
 
@@ -528,6 +540,7 @@ func (s *Scanner) relaxedx() (byte, []byte, int) {
 					last = write
 				}
 				offset++
+
 				break
 			}
 
@@ -536,6 +549,7 @@ func (s *Scanner) relaxedx() (byte, []byte, int) {
 			write++
 			last = write
 			offset++
+
 			continue
 		}
 	}
@@ -554,7 +568,7 @@ func (s *Scanner) relaxedx() (byte, []byte, int) {
 // relaxed_x is a variant of `relaxedx` that supports calculating the token
 // location in the stream, without the need to manually track newlines and
 // escapes in the stream. However, this comes with a performance cost.
-func (s *Scanner) relaxed_x() (byte, []byte, int, int, int) {
+func (s *scanner) relaxed_x() (byte, []byte, int, int, int) {
 	window := s.reader.window()
 	offset, write, lines, chars, last := 0, 0, 0, 0, 0
 
@@ -562,7 +576,7 @@ func (s *Scanner) relaxed_x() (byte, []byte, int, int, int) {
 		// Bulk phase: find next delimiter, space, or escape.
 		for offset >= len(window) {
 			if s.reader.extend() == 0 {
-				return String, window[:last], offset, lines, chars
+				return Plain, window[:last], offset, lines, chars
 			}
 			window = s.reader.window()
 		}
@@ -579,6 +593,7 @@ func (s *Scanner) relaxed_x() (byte, []byte, int, int, int) {
 			write += len(chunk)
 			last = trim(window, write)
 			offset = len(window)
+
 			continue
 		}
 
@@ -606,19 +621,21 @@ func (s *Scanner) relaxed_x() (byte, []byte, int, int, int) {
 			} else {
 				chars++
 			}
+
 			continue
 		} else if extend {
 			if s.reader.extend() == 0 {
 				return EOF, nil, 0, 0, 0
 			}
 			window = s.reader.window()
+
 			continue
 		}
 
 		char := window[offset]
 		switch mask[char] & base {
 		case delim:
-			return String, window[:last], offset, lines, chars
+			return Plain, window[:last], offset, lines, chars
 		case space:
 			if char == '\n' {
 				lines++
@@ -629,6 +646,7 @@ func (s *Scanner) relaxed_x() (byte, []byte, int, int, int) {
 			window[write] = char
 			write++
 			offset++
+
 			continue
 		case escape:
 			offset++ // skip '\\'
@@ -667,7 +685,7 @@ func (s *Scanner) relaxed_x() (byte, []byte, int, int, int) {
 			for {
 				for offset >= len(window) {
 					if s.reader.extend() == 0 {
-						return String, window[:last], offset, lines, chars
+						return Plain, window[:last], offset, lines, chars
 					}
 					window = s.reader.window()
 				}
@@ -684,18 +702,20 @@ func (s *Scanner) relaxed_x() (byte, []byte, int, int, int) {
 					} else {
 						chars++
 					}
+
 					break
 				} else if extend {
 					if s.reader.extend() == 0 {
 						return EOF, nil, 0, 0, 0
 					}
 					window = s.reader.window()
+
 					continue
 				}
 
 				char := window[offset]
 				if mask[char]&base == delim {
-					return String, window[:last], offset, lines, chars
+					return Plain, window[:last], offset, lines, chars
 				}
 				if mask[char]&base == escape {
 					offset++ // skip '\\'
@@ -729,6 +749,7 @@ func (s *Scanner) relaxed_x() (byte, []byte, int, int, int) {
 						write += 2
 					}
 					last = write
+
 					continue
 				}
 				// Any other char (space or plain): copy one and return to bulk.
@@ -744,6 +765,7 @@ func (s *Scanner) relaxed_x() (byte, []byte, int, int, int) {
 					last = write
 				}
 				offset++
+
 				break
 			}
 
@@ -753,6 +775,7 @@ func (s *Scanner) relaxed_x() (byte, []byte, int, int, int) {
 			last = write
 			offset++
 			chars++
+
 			continue
 		}
 	}
@@ -811,6 +834,7 @@ func count_(buffer []byte) (int, int) {
 			lines++
 			chars = 0
 			index++
+
 			continue
 		}
 
@@ -821,6 +845,7 @@ func count_(buffer []byte) (int, int) {
 			lines++
 			chars = 0
 			index += 3
+
 			continue
 		}
 
@@ -830,6 +855,7 @@ func count_(buffer []byte) (int, int) {
 			buffer[index+2] == 0xBF {
 			chars++
 			index += 3
+
 			continue
 		}
 
@@ -838,6 +864,7 @@ func count_(buffer []byte) (int, int) {
 			buffer[index+1] == 0xA0 {
 			chars++
 			index += 2
+
 			continue
 		}
 
@@ -853,6 +880,7 @@ func trim(buffer []byte, end int) int {
 	for end > 0 {
 		if mask[buffer[end-1]]&base == space {
 			end--
+
 			continue
 		}
 
@@ -860,6 +888,7 @@ func trim(buffer []byte, end int) int {
 			buffer[end-2] == 0xC2 &&
 			buffer[end-1] == 0xA0 {
 			end -= 2
+
 			continue
 		}
 
@@ -868,6 +897,7 @@ func trim(buffer []byte, end int) int {
 			buffer[end-2] == 0xBB &&
 			buffer[end-1] == 0xBF {
 			end -= 3
+
 			continue
 		}
 
@@ -876,6 +906,7 @@ func trim(buffer []byte, end int) int {
 			buffer[end-2] == 0x80 &&
 			(buffer[end-1] == 0xA8 || buffer[end-1] == 0xA9) {
 			end -= 3
+
 			continue
 		}
 

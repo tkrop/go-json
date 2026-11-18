@@ -1,7 +1,7 @@
 //nolint:gocognit,cyclop,nestif // validating test precondition.
-//revive:disable:function-length -- priority speed.
-//revive:disable:cognitive-complexity -- priority speed.
-//revive:disable:cyclomatic -- priority speed.
+//revive:disable:function-length // priority speed.
+//revive:disable:cognitive-complexity // priority speed.
+//revive:disable:cyclomatic // priority speed.
 package json
 
 import (
@@ -17,21 +17,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/tkrop/go-testing/test"
-)
-
-// JsonType represents the type of JSON parsing.
-type JsonType byte
-
-// Enumeration of JSON parsing types.
-const (
-	// Type for JSON standard parsing.
-	Json JsonType = iota
-	// Type for JSON5 standard parsing.
-	Json5
-	// Type for JSON5 relaxed parsing.
-	Json5Relax
-	// Type for JSON5 extended parsing (complex numbers, etc).
-	Json5Ext
 )
 
 // TestType identifies a test used to execute scan test cases.
@@ -66,11 +51,10 @@ const (
 	uescapes_ = `\n\b\f\v\t\r\\\u2764`
 )
 
-// filterMaxMode returns a filter that keeps only test cases whose json mode
-// is at most max, i.e. it excludes cases that require a higher-level mode.
-func filterMaxMode(max JsonType) test.FilterFunc[scanParams] {
+// ScanModes keeps only test cases that match one of the provided modes.
+func ScanModes(modes ...Mode) test.FilterFunc[scanParams] {
 	return func(_ string, param scanParams) bool {
-		return param.json <= max
+		return slices.Contains(modes, param.mode)
 	}
 }
 
@@ -91,11 +75,10 @@ func assertPosition(
 // scanParams represents the parameters for scanning tests.
 type scanParams struct {
 	input  string
-	json   JsonType
-	expect []token
+	mode   Mode
+	expect []Token
 	pos    []Position
-	// TODO: unused and may be removed.
-	skip []TestType
+	skip   []TestType
 }
 
 // signedHexPrefixRegex is a regular expression to match signed hexadecimal
@@ -104,16 +87,35 @@ var signedHexPrefixRegex = regexp.MustCompile("^[+-]?0x")
 
 // scanTestCases contains test cases for scanning JSON tokens.
 var scanTestCases = map[string]scanParams{
+	// Empty token test case.
 	"token-empty": {
 		pos:  []Position{{Byte: 0, Line: 0, Char: 0}},
-		skip: []TestType{Next, Number, Quoted},
+		skip: []TestType{Number},
+	},
+	"empty-root-relaxed": {
+		mode:   Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Zero}},
+		pos: []Position{
+			{Byte: 0, Line: 0, Char: 0},
+			{Byte: 0, Line: 0, Char: 0},
+		},
+	},
+	"empty-root-relaxed-whitespace": {
+		input: " ", mode: Relaxed,
+		pos:  []Position{{Byte: 1, Line: 0, Char: 1}},
+		skip: []TestType{Number},
+	},
+	"empty-root-relaxed-string-unterminated": {
+		input: `"`, mode: Relaxed,
+		pos:  []Position{{Byte: 0, Line: 0, Char: 0}},
+		skip: []TestType{Number},
 	},
 
 	// Invalid comments.
 	"comment-slash": {
-		input: "/", json: Json5,
-		expect: []token{
-			{typ: String, token: "/"},
+		input: "/", mode: Relaxed,
+		expect: []Token{
+			{ctx: RootValue, typ: Plain, token: "/"},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -121,9 +123,9 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"comment-slash-x": {
-		input: "/x", json: Json5,
-		expect: []token{
-			{typ: String, token: "/x"},
+		input: "/x", mode: Relaxed,
+		expect: []Token{
+			{ctx: RootValue, typ: Plain, token: "/x"},
 		},
 		pos: []Position{
 			{Byte: 2, Line: 0, Char: 2},
@@ -133,9 +135,9 @@ var scanTestCases = map[string]scanParams{
 
 	// Single-line comments.
 	"comment-single": {
-		input: "// hello world", json: Json5,
-		expect: []token{
-			{typ: Comment, token: " hello world"},
+		input: "// hello world", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: Comment, token: " hello world"},
 		},
 		pos: []Position{
 			{Byte: 14, Line: 0, Char: 14},
@@ -143,10 +145,10 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"comment-single-newline": {
-		input: "// hello\nworld", json: Json5,
-		expect: []token{
-			{typ: Comment, token: " hello"},
-			{typ: String, token: "world"},
+		input: "// hello\nworld", mode: Relaxed,
+		expect: []Token{
+			{ctx: RootValue, typ: Comment, token: " hello"},
+			{ctx: RootValue, typ: Plain, token: "world"},
 		},
 		pos: []Position{
 			{Byte: 8, Line: 0, Char: 8},
@@ -155,10 +157,10 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"comment-single-return": {
-		input: "// hello\rworld", json: Json5,
-		expect: []token{
-			{typ: Comment, token: " hello"},
-			{typ: String, token: "world"},
+		input: "// hello\rworld", mode: Relaxed,
+		expect: []Token{
+			{ctx: RootValue, typ: Comment, token: " hello"},
+			{ctx: RootValue, typ: Plain, token: "world"},
 		},
 		pos: []Position{
 			{Byte: 8, Line: 0, Char: 8},
@@ -167,10 +169,10 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"comment-single-nbsp": {
-		input: "// hello\u00a0world\nrest", json: Json5,
-		expect: []token{
-			{typ: Comment, token: " hello\u00a0world"},
-			{typ: String, token: "rest"},
+		input: "// hello\u00a0world\nrest", mode: Relaxed,
+		expect: []Token{
+			{ctx: RootValue, typ: Comment, token: " hello\u00a0world"},
+			{ctx: RootValue, typ: Plain, token: "rest"},
 		},
 		pos: []Position{
 			{Byte: 15, Line: 0, Char: 14},
@@ -179,10 +181,10 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"comment-single-u2028": {
-		input: "// hello\u2028world", json: Json5,
-		expect: []token{
-			{typ: Comment, token: " hello"},
-			{typ: String, token: "world"},
+		input: "// hello\u2028world", mode: Relaxed,
+		expect: []Token{
+			{ctx: RootValue, typ: Comment, token: " hello"},
+			{ctx: RootValue, typ: Plain, token: "world"},
 		},
 		pos: []Position{
 			{Byte: 8, Line: 0, Char: 8},
@@ -191,10 +193,10 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"comment-single-u2029": {
-		input: "// hello\u2029world", json: Json5,
-		expect: []token{
-			{typ: Comment, token: " hello"},
-			{typ: String, token: "world"},
+		input: "// hello\u2029world", mode: Relaxed,
+		expect: []Token{
+			{ctx: RootValue, typ: Comment, token: " hello"},
+			{ctx: RootValue, typ: Plain, token: "world"},
 		},
 		pos: []Position{
 			{Byte: 8, Line: 0, Char: 8},
@@ -203,9 +205,9 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"comment-single-x": {
-		input: "//x", json: Json5,
-		expect: []token{
-			{typ: Comment, token: "x"},
+		input: "//x", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: Comment, token: "x"},
 		},
 		pos: []Position{
 			{Byte: 3, Line: 0, Char: 3},
@@ -215,18 +217,18 @@ var scanTestCases = map[string]scanParams{
 
 	// Multi-line comments.
 	"comment-multi": {
-		input: "/*x*/", json: Json5,
-		expect: []token{{typ: CommentMulti, token: "x"}},
+		input: "/*x*/", mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: CommentMulti, token: "x"}},
 		pos: []Position{
 			{Byte: 5, Line: 0, Char: 5},
 			{Byte: 5, Line: 0, Char: 5},
 		},
 	},
 	"comment-multi-null": {
-		input: "/* hello */null", json: Json5,
-		expect: []token{
-			{typ: CommentMulti, token: " hello "},
-			{typ: Null, token: "null"},
+		input: "/* hello */null", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: CommentMulti, token: " hello "},
+			{ctx: RootValue, typ: Null, token: "null"},
 		},
 		pos: []Position{
 			{Byte: 11, Line: 0, Char: 11},
@@ -235,32 +237,40 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"comment-multi-newline": {
-		input: "/* hello\nworld */", json: Json5,
-		expect: []token{{typ: CommentMulti, token: " hello\nworld "}},
+		input: "/* hello\nworld */", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: CommentMulti, token: " hello\nworld "},
+		},
 		pos: []Position{
 			{Byte: 17, Line: 1, Char: 8},
 			{Byte: 17, Line: 1, Char: 8},
 		},
 	},
 	"comment-multi-nbsp": {
-		input: "/* hello\u00a0world */", json: Json5,
-		expect: []token{{typ: CommentMulti, token: " hello\u00a0world "}},
+		input: "/* hello\u00a0world */", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: CommentMulti, token: " hello\u00a0world "},
+		},
 		pos: []Position{
 			{Byte: 18, Line: 0, Char: 17},
 			{Byte: 18, Line: 0, Char: 17},
 		},
 	},
 	"comment-multi-u2028": {
-		input: "/* hello\u2028world */", json: Json5,
-		expect: []token{{typ: CommentMulti, token: " hello\u2028world "}},
+		input: "/* hello\u2028world */", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: CommentMulti, token: " hello\u2028world "},
+		},
 		pos: []Position{
 			{Byte: 19, Line: 1, Char: 8},
 			{Byte: 19, Line: 1, Char: 8},
 		},
 	},
 	"comment-multi-u2029": {
-		input: "/* hello\u2029world */", json: Json5,
-		expect: []token{{typ: CommentMulti, token: " hello\u2029world "}},
+		input: "/* hello\u2029world */", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: CommentMulti, token: " hello\u2029world "},
+		},
 		pos: []Position{
 			{Byte: 19, Line: 1, Char: 8},
 			{Byte: 19, Line: 1, Char: 8},
@@ -268,8 +278,8 @@ var scanTestCases = map[string]scanParams{
 	},
 	// TODO: not sure that muli-line with EOF should be accepted.
 	"comment-multi-error": {
-		input: "/*error", json: Json5,
-		expect: []token{{typ: CommentMulti, token: "error"}},
+		input: "/*error", mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: CommentMulti, token: "error"}},
 		pos: []Position{
 			{Byte: 7, Line: 0, Char: 7},
 			{Byte: 7, Line: 0, Char: 7},
@@ -278,49 +288,49 @@ var scanTestCases = map[string]scanParams{
 
 	// Null tokens.
 	"token-null": {
-		input: "null", json: Json,
-		expect: []token{{typ: Null, token: "null"}},
+		input: "null", mode: Json,
+		expect: []Token{{ctx: RootValue, typ: Null, token: "null"}},
 		pos: []Position{
 			{Byte: 4, Line: 0, Char: 4},
 			{Byte: 4, Line: 0, Char: 4},
 		},
 	},
 	"token-null-part": {
-		input: "nul", json: Json,
-		expect: []token{{typ: String, token: "nul"}},
+		input: "nul", mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "nul"}},
 		pos: []Position{
 			{Byte: 3, Line: 0, Char: 3},
 			{Byte: 3, Line: 0, Char: 3},
 		},
 	},
 	"token-null-mismatch": {
-		input: "nulx", json: Json,
-		expect: []token{{typ: String, token: "nulx"}},
+		input: "nulx", mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "nulx"}},
 		pos: []Position{
 			{Byte: 4, Line: 0, Char: 4},
 			{Byte: 4, Line: 0, Char: 4},
 		},
 	},
 	"token-null-extend": {
-		input: "nullx", json: Json,
-		expect: []token{{typ: String, token: "nullx"}},
+		input: "nullx", mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "nullx"}},
 		pos: []Position{
 			{Byte: 5, Line: 0, Char: 5},
 			{Byte: 5, Line: 0, Char: 5},
 		},
 	},
 	"token-null-space": {
-		input: uspaces + "null" + uspaces_, json: Json,
-		expect: []token{{typ: Null, token: "null"}},
+		input: uspaces + "null" + uspaces_, mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: Null, token: "null"}},
 		pos: []Position{
 			{Byte: 21, Line: 3, Char: 6},
 			{Byte: 38, Line: 6, Char: 2},
 		},
 	},
 	"token-null-double": {
-		input: "null" + uspaces_ + "null", json: Json,
-		expect: []token{
-			{typ: String, token: "null" + uspaces_ + "null"},
+		input: "null" + uspaces_ + "null", mode: Relaxed,
+		expect: []Token{
+			{ctx: RootValue, typ: Plain, token: "null" + uspaces_ + "null"},
 		},
 		pos: []Position{
 			{Byte: 25, Line: 3, Char: 6},
@@ -328,9 +338,10 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"token-null-comma": {
-		input: "null,", json: Json,
-		expect: []token{
-			{typ: Null, token: "null"}, {typ: Comma, token: ","},
+		input: "null,", mode: Json,
+		expect: []Token{
+			{ctx: RootValue, typ: Null, token: "null"},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 4, Line: 0, Char: 4},
@@ -339,9 +350,10 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"token-null-space-comma": {
-		input: "null" + uspaces_ + ",", json: Json,
-		expect: []token{
-			{typ: Null, token: "null"}, {typ: Comma, token: ","},
+		input: "null" + uspaces_ + ",", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: Null, token: "null"},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 4, Line: 0, Char: 4},
@@ -350,11 +362,11 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"token-null-comment": {
-		input: "null" + uspaces_ + "// comment\n" + ",", json: Json5,
-		expect: []token{
-			{typ: Null, token: "null"},
-			{typ: Comment, token: " comment"},
-			{typ: Comma, token: ","},
+		input: "null" + uspaces_ + "// comment\n" + ",", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: Null, token: "null"},
+			{ctx: RootValue, typ: Comment, token: " comment"},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 4, Line: 0, Char: 4},
@@ -364,11 +376,11 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"token-null-comment-multi": {
-		input: "null" + "/* comment */" + ",", json: Json5,
-		expect: []token{
-			{typ: Null, token: "null"},
-			{typ: CommentMulti, token: " comment "},
-			{typ: Comma, token: ","},
+		input: "null" + "/* comment */" + ",", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: Null, token: "null"},
+			{ctx: RootValue, typ: CommentMulti, token: " comment "},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 4, Line: 0, Char: 4},
@@ -378,9 +390,9 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"token-null-comment-invalid": {
-		input: "null /* comment */ false", json: Json5,
-		expect: []token{
-			{typ: String, token: "null /* comment */ false"},
+		input: "null /* comment */ false", mode: Relaxed,
+		expect: []Token{
+			{ctx: RootValue, typ: Plain, token: "null /* comment */ false"},
 		},
 		pos: []Position{
 			{Byte: 24, Line: 0, Char: 24},
@@ -390,65 +402,65 @@ var scanTestCases = map[string]scanParams{
 
 	// Boolean tokens.
 	"token-bool-true": {
-		input: "true", json: Json,
-		expect: []token{{typ: True, token: "true"}},
+		input: "true", mode: Json,
+		expect: []Token{{ctx: RootValue, typ: True, token: "true"}},
 		pos: []Position{
 			{Byte: 4, Line: 0, Char: 4},
 			{Byte: 4, Line: 0, Char: 4},
 		},
 	},
 	"token-true-mismatch": {
-		input: "trux", json: Json,
-		expect: []token{{typ: String, token: "trux"}},
+		input: "trux", mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "trux"}},
 		pos: []Position{
 			{Byte: 4, Line: 0, Char: 4},
 			{Byte: 4, Line: 0, Char: 4},
 		},
 	},
 	"token-bool-true-extend": {
-		input: "truex", json: Json,
-		expect: []token{{typ: String, token: "truex"}},
+		input: "truex", mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "truex"}},
 		pos: []Position{
 			{Byte: 5, Line: 0, Char: 5},
 			{Byte: 5, Line: 0, Char: 5},
 		},
 	},
 	"token-bool-false": {
-		input: "false", json: Json,
-		expect: []token{{typ: False, token: "false"}},
+		input: "false", mode: Json,
+		expect: []Token{{ctx: RootValue, typ: False, token: "false"}},
 		pos: []Position{
 			{Byte: 5, Line: 0, Char: 5},
 			{Byte: 5, Line: 0, Char: 5},
 		},
 	},
 	"token-false-mismatch": {
-		input: "falsx", json: Json,
-		expect: []token{{typ: String, token: "falsx"}},
+		input: "falsx", mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "falsx"}},
 		pos: []Position{
 			{Byte: 5, Line: 0, Char: 5},
 			{Byte: 5, Line: 0, Char: 5},
 		},
 	},
 	"token-bool-false-extend": {
-		input: "falsex", json: Json,
-		expect: []token{{typ: String, token: "falsex"}},
+		input: "falsex", mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "falsex"}},
 		pos: []Position{
 			{Byte: 6, Line: 0, Char: 6},
 			{Byte: 6, Line: 0, Char: 6},
 		},
 	},
 	"token-bool-space": {
-		input: uspaces + "true" + uspaces_, json: Json,
-		expect: []token{{typ: True, token: "true"}},
+		input: uspaces + "true" + uspaces_, mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: True, token: "true"}},
 		pos: []Position{
 			{Byte: 21, Line: 3, Char: 6},
 			{Byte: 38, Line: 6, Char: 2},
 		},
 	},
 	"token-bool-double": {
-		input: "true" + uspaces_ + "false", json: Json,
-		expect: []token{
-			{typ: String, token: "true" + uspaces_ + "false"},
+		input: "true" + uspaces_ + "false", mode: Relaxed,
+		expect: []Token{
+			{ctx: RootValue, typ: Plain, token: "true" + uspaces_ + "false"},
 		},
 		pos: []Position{
 			{Byte: 26, Line: 3, Char: 7},
@@ -456,9 +468,10 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"token-bool-comma": {
-		input: "true,", json: Json,
-		expect: []token{
-			{typ: True, token: "true"}, {typ: Comma, token: ","},
+		input: "true,", mode: Json,
+		expect: []Token{
+			{ctx: RootValue, typ: True, token: "true"},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 4, Line: 0, Char: 4},
@@ -467,9 +480,10 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"token-bool-space-comma": {
-		input: "false" + uspaces_ + ",", json: Json,
-		expect: []token{
-			{typ: False, token: "false"}, {typ: Comma, token: ","},
+		input: "false" + uspaces_ + ",", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: False, token: "false"},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 5, Line: 0, Char: 5},
@@ -478,11 +492,11 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"token-bool-comment": {
-		input: "false" + uspaces_ + "// comment\n" + ",", json: Json5,
-		expect: []token{
-			{typ: False, token: "false"},
-			{typ: Comment, token: " comment"},
-			{typ: Comma, token: ","},
+		input: "false" + uspaces_ + "// comment\n" + ",", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: False, token: "false"},
+			{ctx: RootValue, typ: Comment, token: " comment"},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 5, Line: 0, Char: 5},
@@ -492,11 +506,11 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"token-bool-comment-multi": {
-		input: "true" + "/* comment */" + ",", json: Json5,
-		expect: []token{
-			{typ: True, token: "true"},
-			{typ: CommentMulti, token: " comment "},
-			{typ: Comma, token: ","},
+		input: "true" + "/* comment */" + ",", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: True, token: "true"},
+			{ctx: RootValue, typ: CommentMulti, token: " comment "},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 4, Line: 0, Char: 4},
@@ -506,9 +520,9 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"token-bool-comment-invalid": {
-		input: "true /* comment */ false", json: Json5,
-		expect: []token{
-			{typ: String, token: "true /* comment */ false"},
+		input: "true /* comment */ false", mode: Relaxed,
+		expect: []Token{
+			{ctx: RootValue, typ: Plain, token: "true /* comment */ false"},
 		},
 		pos: []Position{
 			{Byte: 24, Line: 0, Char: 24},
@@ -518,41 +532,42 @@ var scanTestCases = map[string]scanParams{
 
 	// Special numbers.
 	"number-nan": {
-		input: "NaN", json: Json5,
-		expect: []token{{typ: NaN, token: "NaN"}},
+		input: "NaN", mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: NaN, token: "NaN"}},
 		pos: []Position{
 			{Byte: 3, Line: 0, Char: 3},
 			{Byte: 3, Line: 0, Char: 3},
 		},
 	},
 	"number-nan-part": {
-		input: "Na", json: Json5,
-		expect: []token{{typ: String, token: "Na"}},
+		input: "Na", mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "Na"}},
 		pos: []Position{
 			{Byte: 2, Line: 0, Char: 2},
 			{Byte: 2, Line: 0, Char: 2},
 		},
 	},
 	"number-nan-error": {
-		input: "NaNx", json: Json5,
-		expect: []token{{typ: String, token: "NaNx"}},
+		input: "NaNx", mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "NaNx"}},
 		pos: []Position{
 			{Byte: 4, Line: 0, Char: 4},
 			{Byte: 4, Line: 0, Char: 4},
 		},
 	},
 	"number-nan-space": {
-		input: uspaces + "NaN" + uspaces_, json: Json5,
-		expect: []token{{typ: NaN, token: "NaN"}},
+		input: uspaces + "NaN" + uspaces_, mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: NaN, token: "NaN"}},
 		pos: []Position{
 			{Byte: 20, Line: 3, Char: 5},
 			{Byte: 37, Line: 6, Char: 2},
 		},
 	},
 	"number-nan-comma": {
-		input: "NaN,", json: Json5,
-		expect: []token{
-			{typ: NaN, token: "NaN"}, {typ: Comma, token: ","},
+		input: "NaN,", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: NaN, token: "NaN"},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 3, Line: 0, Char: 3},
@@ -561,41 +576,42 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"number-nan-pos": {
-		input: "+NaN", json: Json5,
-		expect: []token{{typ: NaN, token: "+NaN"}},
+		input: "+NaN", mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: NaN, token: "+NaN"}},
 		pos: []Position{
 			{Byte: 4, Line: 0, Char: 4},
 			{Byte: 4, Line: 0, Char: 4},
 		},
 	},
 	"number-nan-neg": {
-		input: "-NaN", json: Json5,
-		expect: []token{{typ: NaN, token: "-NaN"}},
+		input: "-NaN", mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: NaN, token: "-NaN"}},
 		pos: []Position{
 			{Byte: 4, Line: 0, Char: 4},
 			{Byte: 4, Line: 0, Char: 4},
 		},
 	},
 	"number-infinity": {
-		input: "Infinity", json: Json5,
-		expect: []token{{typ: Infinity, token: "Infinity"}},
+		input: "Infinity", mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: Infinity, token: "Infinity"}},
 		pos: []Position{
 			{Byte: 8, Line: 0, Char: 8},
 			{Byte: 8, Line: 0, Char: 8},
 		},
 	},
 	"number-infinity-space": {
-		input: uspaces + "Infinity" + uspaces_, json: Json5,
-		expect: []token{{typ: Infinity, token: "Infinity"}},
+		input: uspaces + "Infinity" + uspaces_, mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: Infinity, token: "Infinity"}},
 		pos: []Position{
 			{Byte: 25, Line: 3, Char: 10},
 			{Byte: 42, Line: 6, Char: 2},
 		},
 	},
 	"number-infinity-comma": {
-		input: "Infinity,", json: Json5,
-		expect: []token{
-			{typ: Infinity, token: "Infinity"}, {typ: Comma, token: ","},
+		input: "Infinity,", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: Infinity, token: "Infinity"},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 8, Line: 0, Char: 8},
@@ -604,16 +620,16 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"number-infinity-neg": {
-		input: "-Infinity", json: Json5,
-		expect: []token{{typ: Infinity, token: "-Infinity"}},
+		input: "-Infinity", mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: Infinity, token: "-Infinity"}},
 		pos: []Position{
 			{Byte: 9, Line: 0, Char: 9},
 			{Byte: 9, Line: 0, Char: 9},
 		},
 	},
 	"number-infinity-pos": {
-		input: "+Infinity", json: Json5,
-		expect: []token{{typ: Infinity, token: "+Infinity"}},
+		input: "+Infinity", mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: Infinity, token: "+Infinity"}},
 		pos: []Position{
 			{Byte: 9, Line: 0, Char: 9},
 			{Byte: 9, Line: 0, Char: 9},
@@ -622,25 +638,26 @@ var scanTestCases = map[string]scanParams{
 
 	// Zero numbers.
 	"number-zero": {
-		input: "0", json: Json,
-		expect: []token{{typ: Integer, token: "0"}},
+		input: "0", mode: Json,
+		expect: []Token{{ctx: RootValue, typ: Integer, token: "0"}},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
 			{Byte: 1, Line: 0, Char: 1},
 		},
 	},
 	"number-zero-space": {
-		input: uspaces + "0" + uspaces_, json: Json,
-		expect: []token{{typ: Integer, token: "0"}},
+		input: uspaces + "0" + uspaces_, mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: Integer, token: "0"}},
 		pos: []Position{
 			{Byte: 18, Line: 3, Char: 3},
 			{Byte: 35, Line: 6, Char: 2},
 		},
 	},
 	"number-zero-comma": {
-		input: "0,", json: Json5,
-		expect: []token{
-			{typ: Integer, token: "0"}, {typ: Comma, token: ","},
+		input: "0,", mode: Json,
+		expect: []Token{
+			{ctx: RootValue, typ: Integer, token: "0"},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -649,56 +666,56 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"number-zero-twice": {
-		input: "0 0", json: Json5,
-		expect: []token{{typ: String, token: "0 0"}},
+		input: "0 0", mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "0 0"}},
 		pos: []Position{
 			{Byte: 3, Line: 0, Char: 3},
 			{Byte: 3, Line: 0, Char: 3},
 		},
 	},
 	"number-zero-neg": {
-		input: "-0", json: Json5,
-		expect: []token{{typ: Integer, token: "-0"}},
+		input: "-0", mode: Json,
+		expect: []Token{{ctx: RootValue, typ: Integer, token: "-0"}},
 		pos: []Position{
 			{Byte: 2, Line: 0, Char: 2},
 			{Byte: 2, Line: 0, Char: 2},
 		},
 	},
 	"number-zero-pos": {
-		input: "+0", json: Json5,
-		expect: []token{{typ: Integer, token: "+0"}},
+		input: "+0", mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: Integer, token: "+0"}},
 		pos: []Position{
 			{Byte: 2, Line: 0, Char: 2},
 			{Byte: 2, Line: 0, Char: 2},
 		},
 	},
 	"number-zero-int": {
-		input: "0000", json: Json5,
-		expect: []token{{typ: String, token: "0000"}},
+		input: "0000", mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "0000"}},
 		pos: []Position{
 			{Byte: 4, Line: 0, Char: 4},
 			{Byte: 4, Line: 0, Char: 4},
 		},
 	},
 	"number-zero-float": {
-		input: "0000.0000", json: Json5,
-		expect: []token{{typ: String, token: "0000.0000"}},
+		input: "0000.0000", mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "0000.0000"}},
 		pos: []Position{
 			{Byte: 9, Line: 0, Char: 9},
 			{Byte: 9, Line: 0, Char: 9},
 		},
 	},
 	"number-zero-hex": {
-		input: "0000x1010", json: Json5,
-		expect: []token{{typ: String, token: "0000x1010"}},
+		input: "0000x1010", mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "0000x1010"}},
 		pos: []Position{
 			{Byte: 9, Line: 0, Char: 9},
 			{Byte: 9, Line: 0, Char: 9},
 		},
 	},
 	"number-zero-complex": {
-		input: "0000+0000i", json: Json5,
-		expect: []token{{typ: String, token: "0000+0000i"}},
+		input: "0000+0000i", mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "0000+0000i"}},
 		pos: []Position{
 			{Byte: 10, Line: 0, Char: 10},
 			{Byte: 10, Line: 0, Char: 10},
@@ -707,25 +724,26 @@ var scanTestCases = map[string]scanParams{
 
 	// Integer numbers.
 	"number-int": {
-		input: "12345678", json: Json,
-		expect: []token{{typ: Integer, token: "12345678"}},
+		input: "12345678", mode: Json,
+		expect: []Token{{ctx: RootValue, typ: Integer, token: "12345678"}},
 		pos: []Position{
 			{Byte: 8, Line: 0, Char: 8},
 			{Byte: 8, Line: 0, Char: 8},
 		},
 	},
 	"number-int-space": {
-		input: uspaces + "12345678" + uspaces_, json: Json,
-		expect: []token{{typ: Integer, token: "12345678"}},
+		input: uspaces + "12345678" + uspaces_, mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: Integer, token: "12345678"}},
 		pos: []Position{
 			{Byte: 25, Line: 3, Char: 10},
 			{Byte: 42, Line: 6, Char: 2},
 		},
 	},
 	"number-int-comma": {
-		input: "12345678,", json: Json,
-		expect: []token{
-			{typ: Integer, token: "12345678"}, {typ: Comma, token: ","},
+		input: "12345678,", mode: Json,
+		expect: []Token{
+			{ctx: RootValue, typ: Integer, token: "12345678"},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 8, Line: 0, Char: 8},
@@ -734,25 +752,30 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"number-int-neg": {
-		input: "-2197191237916642", json: Json,
-		expect: []token{{typ: Integer, token: "-2197191237916642"}},
+		input: "-2197191237916642", mode: Json,
+		expect: []Token{
+			{ctx: RootValue, typ: Integer, token: "-2197191237916642"},
+		},
 		pos: []Position{
 			{Byte: 17, Line: 0, Char: 17},
 			{Byte: 17, Line: 0, Char: 17},
 		},
 	},
 	"number-int-pos": {
-		input: "+2198137762017356", json: Json5,
-		expect: []token{{typ: Integer, token: "+2198137762017356"}},
+		input: "+2198137762017356", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: Integer, token: "+2198137762017356"},
+		},
 		pos: []Position{
 			{Byte: 17, Line: 0, Char: 17},
 			{Byte: 17, Line: 0, Char: 17},
 		},
 	},
 	"number-int-extend": {
-		input: "1\xC2\xA0,", json: Json,
-		expect: []token{
-			{typ: Integer, token: "1"}, {typ: Comma, token: ","},
+		input: "1\xC2\xA0,", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: Integer, token: "1"},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -761,16 +784,16 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"number-int-uspace-eof": {
-		input: "1\xC2", json: Json,
-		expect: []token{{typ: EOF, token: ""}},
+		input: "1\xC2", mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: EOF, token: ""}},
 		pos: []Position{
 			{Byte: 0, Line: 0, Char: 0},
 			{Byte: 0, Line: 0, Char: 0},
 		},
 	},
 	"number-int-uspace-fallback": {
-		input: "1\xC2", json: Json,
-		expect: []token{{typ: EOF, token: ""}},
+		input: "1\xC2", mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: EOF, token: ""}},
 		pos: []Position{
 			{Byte: 0, Line: 0, Char: 0},
 			{Byte: 0, Line: 0, Char: 0},
@@ -779,25 +802,26 @@ var scanTestCases = map[string]scanParams{
 
 	// Dot non-decimal numbers.
 	"number-dot-alpha": {
-		input: ".abc", json: Json5,
-		expect: []token{{typ: String, token: ".abc"}},
+		input: ".abc", mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: ".abc"}},
 		pos: []Position{
 			{Byte: 4, Line: 0, Char: 4},
 			{Byte: 4, Line: 0, Char: 4},
 		},
 	},
 	"number-dot-space": {
-		input: uspaces + "." + uspaces_, json: Json5Ext,
-		expect: []token{{typ: String, token: "."}},
+		input: uspaces + "." + uspaces_, mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "."}},
 		pos: []Position{
 			{Byte: 35, Line: 6, Char: 2},
 			{Byte: 35, Line: 6, Char: 2},
 		},
 	},
 	"number-dot-comma": {
-		input: ".,", json: Json5Ext,
-		expect: []token{
-			{typ: String, token: "."}, {typ: Comma, token: ","},
+		input: ".,", mode: Relaxed,
+		expect: []Token{
+			{ctx: RootValue, typ: Plain, token: "."},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -808,58 +832,68 @@ var scanTestCases = map[string]scanParams{
 
 	// Decimal numbers.
 	"number-float": {
-		input: "12345678901.23456789012", json: Json,
-		expect: []token{{typ: Decimal, token: "12345678901.23456789012"}},
+		input: "12345678901.23456789012", mode: Json,
+		expect: []Token{
+			{ctx: RootValue, typ: Decimal, token: "12345678901.23456789012"},
+		},
 		pos: []Position{
 			{Byte: 23, Line: 0, Char: 23},
 			{Byte: 23, Line: 0, Char: 23},
 		},
 	},
 	"number-float-zero": {
-		input: "0.123456789012", json: Json,
-		expect: []token{{typ: Decimal, token: "0.123456789012"}},
+		input: "0.123456789012", mode: Json,
+		expect: []Token{
+			{ctx: RootValue, typ: Decimal, token: "0.123456789012"},
+		},
 		pos: []Position{
 			{Byte: 14, Line: 0, Char: 14},
 			{Byte: 14, Line: 0, Char: 14},
 		},
 	},
 	"number-float-zero-exp": {
-		input: "0e5", json: Json5,
-		expect: []token{{typ: Decimal, token: "0e5"}},
+		input: "0e5", mode: Json,
+		expect: []Token{{ctx: RootValue, typ: Decimal, token: "0e5"}},
 		pos: []Position{
 			{Byte: 3, Line: 0, Char: 3},
 			{Byte: 3, Line: 0, Char: 3},
 		},
 	},
 	"number-float-dot-stop": {
-		input: "12345678901234.", json: Json,
-		expect: []token{{typ: Decimal, token: "12345678901234."}},
+		input: "12345678901234.", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: Decimal, token: "12345678901234."},
+		},
 		pos: []Position{
 			{Byte: 15, Line: 0, Char: 15},
 			{Byte: 15, Line: 0, Char: 15},
 		},
 	},
 	"number-float-dot-start": {
-		input: ".123456789012e-12", json: Json,
-		expect: []token{{typ: Decimal, token: ".123456789012e-12"}},
+		input: ".123456789012e-12", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: Decimal, token: ".123456789012e-12"},
+		},
 		pos: []Position{
 			{Byte: 17, Line: 0, Char: 17},
 			{Byte: 17, Line: 0, Char: 17},
 		},
 	},
 	"number-float-space": {
-		input: uspaces + "12345678901.23456789012e-12" + uspaces_, json: Json,
-		expect: []token{{typ: Decimal, token: "12345678901.23456789012e-12"}},
+		input: uspaces + "12345678901.23456789012e-12" + uspaces_, mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: Decimal, token: "12345678901.23456789012e-12"},
+		},
 		pos: []Position{
 			{Byte: 44, Line: 3, Char: 29},
 			{Byte: 61, Line: 6, Char: 2},
 		},
 	},
 	"number-float-comma": {
-		input: "12345678901.23456789012e-12,", json: Json,
-		expect: []token{
-			{typ: Decimal, token: "12345678901.23456789012e-12"},
-			{typ: Comma, token: ","},
+		input: "12345678901.23456789012e-12,", mode: Json,
+		expect: []Token{
+			{ctx: RootValue, typ: Decimal, token: "12345678901.23456789012e-12"},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 27, Line: 0, Char: 27},
@@ -868,16 +902,20 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"number-float-neg": {
-		input: "-987654321012345.6789098e-12", json: Json,
-		expect: []token{{typ: Decimal, token: "-987654321012345.6789098e-12"}},
+		input: "-987654321012345.6789098e-12", mode: Json,
+		expect: []Token{
+			{ctx: RootValue, typ: Decimal, token: "-987654321012345.6789098e-12"},
+		},
 		pos: []Position{
 			{Byte: 28, Line: 0, Char: 28},
 			{Byte: 28, Line: 0, Char: 28},
 		},
 	},
 	"number-float-pos": {
-		input: "+543.2101234567890123456e+7", json: Json5,
-		expect: []token{{typ: Decimal, token: "+543.2101234567890123456e+7"}},
+		input: "+543.2101234567890123456e+7", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: Decimal, token: "+543.2101234567890123456e+7"},
+		},
 		pos: []Position{
 			{Byte: 27, Line: 0, Char: 27},
 			{Byte: 27, Line: 0, Char: 27},
@@ -886,40 +924,40 @@ var scanTestCases = map[string]scanParams{
 
 	// Invalid decimal numbers.
 	"number-float-sign-invalid": {
-		input: "0e+a", json: Json5,
-		expect: []token{{typ: String, token: "0e+a"}},
+		input: "0e+a", mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "0e+a"}},
 		pos: []Position{
 			{Byte: 4, Line: 0, Char: 4},
 			{Byte: 4, Line: 0, Char: 4},
 		},
 	},
 	"number-float-invalid-char": {
-		input: "1.2a", json: Json5,
-		expect: []token{{typ: String, token: "1.2a"}},
+		input: "1.2a", mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "1.2a"}},
 		pos: []Position{
 			{Byte: 4, Line: 0, Char: 4},
 			{Byte: 4, Line: 0, Char: 4},
 		},
 	},
 	"number-float-invalid-sign": {
-		input: "1e+a", json: Json5,
-		expect: []token{{typ: String, token: "1e+a"}},
+		input: "1e+a", mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "1e+a"}},
 		pos: []Position{
 			{Byte: 4, Line: 0, Char: 4},
 			{Byte: 4, Line: 0, Char: 4},
 		},
 	},
 	"number-float-invalid-digit": {
-		input: "1e2a", json: Json5,
-		expect: []token{{typ: String, token: "1e2a"}},
+		input: "1e2a", mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "1e2a"}},
 		pos: []Position{
 			{Byte: 4, Line: 0, Char: 4},
 			{Byte: 4, Line: 0, Char: 4},
 		},
 	},
 	"number-float-invalid-letter": {
-		input: "1ea", json: Json5,
-		expect: []token{{typ: String, token: "1ea"}},
+		input: "1ea", mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "1ea"}},
 		pos: []Position{
 			{Byte: 3, Line: 0, Char: 3},
 			{Byte: 3, Line: 0, Char: 3},
@@ -928,25 +966,30 @@ var scanTestCases = map[string]scanParams{
 
 	// Hexadecimal numbers.
 	"number-hex": {
-		input: "0x98ca3fe4", json: Json5,
-		expect: []token{{typ: HexaDecimal, token: "0x98ca3fe4"}},
+		input: "0x98ca3fe4", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: HexaDecimal, token: "0x98ca3fe4"},
+		},
 		pos: []Position{
 			{Byte: 10, Line: 0, Char: 10},
 			{Byte: 10, Line: 0, Char: 10},
 		},
 	},
 	"number-hex-space": {
-		input: uspaces + "0x98ca3fe4" + uspaces_, json: Json5,
-		expect: []token{{typ: HexaDecimal, token: "0x98ca3fe4"}},
+		input: uspaces + "0x98ca3fe4" + uspaces_, mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: HexaDecimal, token: "0x98ca3fe4"},
+		},
 		pos: []Position{
 			{Byte: 27, Line: 3, Char: 12},
 			{Byte: 44, Line: 6, Char: 2},
 		},
 	},
 	"number-hex-comma": {
-		input: "0x98ca3fe4,", json: Json5,
-		expect: []token{
-			{typ: HexaDecimal, token: "0x98ca3fe4"}, {typ: Comma, token: ","},
+		input: "0x98ca3fe4,", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: HexaDecimal, token: "0x98ca3fe4"},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 10, Line: 0, Char: 10},
@@ -955,33 +998,38 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"number-hex-neg": {
-		input: "-0x0101010101010101", json: Json5,
-		expect: []token{{typ: HexaDecimal, token: "-0x0101010101010101"}},
+		input: "-0x0101010101010101", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: HexaDecimal, token: "-0x0101010101010101"},
+		},
 		pos: []Position{
 			{Byte: 19, Line: 0, Char: 19},
 			{Byte: 19, Line: 0, Char: 19},
 		},
 	},
 	"number-hex-pos": {
-		input: "+0xefefefefefefefef", json: Json5,
-		expect: []token{{typ: HexaDecimal, token: "+0xefefefefefefefef"}},
+		input: "+0xefefefefefefefef", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: HexaDecimal, token: "+0xefefefefefefefef"},
+		},
 		pos: []Position{
 			{Byte: 19, Line: 0, Char: 19},
 			{Byte: 19, Line: 0, Char: 19},
 		},
 	},
 	"number-hex-invalid": {
-		input: "0xG", json: Json5,
-		expect: []token{{typ: String, token: "0xG"}},
+		input: "0xG", mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "0xG"}},
 		pos: []Position{
 			{Byte: 3, Line: 0, Char: 3},
 			{Byte: 3, Line: 0, Char: 3},
 		},
 	},
 	"number-hex-digit-prefix": {
-		input: "1x2,", json: Json5,
-		expect: []token{
-			{typ: HexaDecimal, token: "1x2"}, {typ: Comma, token: ","},
+		input: "1x2,", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: HexaDecimal, token: "1x2"},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 3, Line: 0, Char: 3},
@@ -992,17 +1040,20 @@ var scanTestCases = map[string]scanParams{
 
 	// Complex numbers.
 	"number-complex": {
-		input: "123.45+67.89e-2i", json: Json5Ext,
-		expect: []token{{typ: Complex, token: "123.45+67.89e-2i"}},
+		input: "123.45+67.89e-2i", mode: Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: Complex, token: "123.45+67.89e-2i"},
+		},
 		pos: []Position{
 			{Byte: 16, Line: 0, Char: 16},
 			{Byte: 16, Line: 0, Char: 16},
 		},
 	},
 	"number-complex-zero": {
-		input: "0i,", json: Json5Ext,
-		expect: []token{
-			{typ: Complex, token: "0i"}, {typ: Comma, token: ","},
+		input: "0i,", mode: Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: Complex, token: "0i"},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 2, Line: 0, Char: 2},
@@ -1011,9 +1062,10 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"number-complex-one": {
-		input: "1i,", json: Json5Ext,
-		expect: []token{
-			{typ: Complex, token: "1i"}, {typ: Comma, token: ","},
+		input: "1i,", mode: Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: Complex, token: "1i"},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 2, Line: 0, Char: 2},
@@ -1022,9 +1074,10 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"number-complex-zero-sign": {
-		input: "0+1i,", json: Json5Ext,
-		expect: []token{
-			{typ: Complex, token: "0+1i"}, {typ: Comma, token: ","},
+		input: "0+1i,", mode: Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: Complex, token: "0+1i"},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 4, Line: 0, Char: 4},
@@ -1033,17 +1086,18 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"number-complex-virtual": {
-		input: "123.45i", json: Json5Ext,
-		expect: []token{{typ: Complex, token: "123.45i"}},
+		input: "123.45i", mode: Extended,
+		expect: []Token{{ctx: RootValue, typ: Complex, token: "123.45i"}},
 		pos: []Position{
 			{Byte: 7, Line: 0, Char: 7},
 			{Byte: 7, Line: 0, Char: 7},
 		},
 	},
 	"number-complex-short-comma": {
-		input: "1+i,", json: Json5Ext,
-		expect: []token{
-			{typ: Complex, token: "1+i"}, {typ: Comma, token: ","},
+		input: "1+i,", mode: Relaxed | Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: Complex, token: "1+i"},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 3, Line: 0, Char: 3},
@@ -1052,17 +1106,20 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"number-complex-space": {
-		input: uspaces + "123.45+67.89e-2i" + uspaces_, json: Json5Ext,
-		expect: []token{{typ: Complex, token: "123.45+67.89e-2i"}},
+		input: uspaces + "123.45+67.89e-2i" + uspaces_, mode: Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: Complex, token: "123.45+67.89e-2i"},
+		},
 		pos: []Position{
 			{Byte: 33, Line: 3, Char: 18},
 			{Byte: 50, Line: 6, Char: 2},
 		},
 	},
 	"number-complex-comma": {
-		input: "123.45+67.89e-2i,", json: Json5Ext,
-		expect: []token{
-			{typ: Complex, token: "123.45+67.89e-2i"}, {typ: Comma, token: ","},
+		input: "123.45+67.89e-2i,", mode: Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: Complex, token: "123.45+67.89e-2i"},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 16, Line: 0, Char: 16},
@@ -1071,25 +1128,84 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"number-complex-neg": {
-		input: "-987.65e-2-43.21e-2i", json: Json5Ext,
-		expect: []token{{typ: Complex, token: "-987.65e-2-43.21e-2i"}},
+		input: "-987.65e-2-43.21e-2i", mode: Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: Complex, token: "-987.65e-2-43.21e-2i"},
+		},
 		pos: []Position{
 			{Byte: 20, Line: 0, Char: 20},
 			{Byte: 20, Line: 0, Char: 20},
 		},
 	},
 	"number-complex-pos": {
-		input: "+456.78e+2+98.76e+2i", json: Json5Ext,
-		expect: []token{{typ: Complex, token: "+456.78e+2+98.76e+2i"}},
+		input: "+456.78e+2+98.76e+2i", mode: Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: Complex, token: "+456.78e+2+98.76e+2i"},
+		},
 		pos: []Position{
 			{Byte: 20, Line: 0, Char: 20},
 			{Byte: 20, Line: 0, Char: 20},
 		},
 	},
+	"number-complex-first-plus": {
+		input: "1i+2,", mode: Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: Complex, token: "1i+2"},
+			{ctx: RootValue, typ: Comma, token: ","},
+		},
+		pos: []Position{
+			{Byte: 4, Line: 0, Char: 4},
+			{Byte: 5, Line: 0, Char: 5},
+			{Byte: 5, Line: 0, Char: 5},
+		},
+	},
+	"number-complex-first-minus": {
+		input: "1i-2,", mode: Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: Complex, token: "1i-2"},
+			{ctx: RootValue, typ: Comma, token: ","},
+		},
+		pos: []Position{
+			{Byte: 4, Line: 0, Char: 4},
+			{Byte: 5, Line: 0, Char: 5},
+			{Byte: 5, Line: 0, Char: 5},
+		},
+	},
+	"number-complex-first-no-sign": {
+		input: "i386,", mode: Relaxed | Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: Plain, token: "i386"},
+			{ctx: RootValue, typ: Comma, token: ","},
+		},
+		pos: []Position{
+			{Byte: 4, Line: 0, Char: 4},
+			{Byte: 5, Line: 0, Char: 5},
+			{Byte: 5, Line: 0, Char: 5},
+		},
+	},
+	"number-complex-terminal-numeric": {
+		input: "1+2+3i,", mode: Extended,
+		expect: []Token{{ctx: RootValue, typ: EOF, token: ""}},
+		pos: []Position{
+			{Byte: 0, Line: 0, Char: 0},
+			{Byte: 0, Line: 0, Char: 0},
+		},
+		skip: []TestType{Next},
+	},
+	"number-complex-terminal-invalid": {
+		input: "1+2a,", mode: Extended,
+		expect: []Token{{ctx: RootValue, typ: EOF, token: ""}},
+		pos: []Position{
+			{Byte: 0, Line: 0, Char: 0},
+			{Byte: 0, Line: 0, Char: 0},
+		},
+		skip: []TestType{Next},
+	},
 	"number-complex-fail-numeric": {
-		input: "1+2+3i,", json: Json5Ext,
-		expect: []token{
-			{typ: String, token: "1+2+3i"}, {typ: Comma, token: ","},
+		input: "1+2+3i,", mode: Relaxed,
+		expect: []Token{
+			{ctx: RootValue, typ: Plain, token: "1+2+3i"},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 6, Line: 0, Char: 6},
@@ -1098,9 +1214,10 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"number-complex-fail-invalid": {
-		input: "1+2a,", json: Json5Ext,
-		expect: []token{
-			{typ: String, token: "1+2a"}, {typ: Comma, token: ","},
+		input: "1+2a,", mode: Relaxed,
+		expect: []Token{
+			{ctx: RootValue, typ: Plain, token: "1+2a"},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 4, Line: 0, Char: 4},
@@ -1108,44 +1225,103 @@ var scanTestCases = map[string]scanParams{
 			{Byte: 5, Line: 0, Char: 5},
 		},
 	},
+	"number-complex-invalid": {
+		input: "invalid", mode: Relaxed | Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: Plain, token: "invalid"},
+		},
+		pos: []Position{
+			{Byte: 7, Line: 0, Char: 7},
+			{Byte: 7, Line: 0, Char: 7},
+		},
+	},
+	"number-complex-first-tail": {
+		input: "1ix,", mode: Relaxed | Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: Plain, token: "1ix"},
+			{ctx: RootValue, typ: Comma, token: ","},
+		},
+		pos: []Position{
+			{Byte: 3, Line: 0, Char: 3},
+			{Byte: 4, Line: 0, Char: 4},
+			{Byte: 4, Line: 0, Char: 4},
+		},
+	},
+	"number-complex-second-plus": {
+		input: "1+2i+3,", mode: Relaxed | Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: Plain, token: "1+2i+3"},
+			{ctx: RootValue, typ: Comma, token: ","},
+		},
+		pos: []Position{
+			{Byte: 6, Line: 0, Char: 6},
+			{Byte: 7, Line: 0, Char: 7},
+			{Byte: 7, Line: 0, Char: 7},
+		},
+	},
+	"number-complex-second-minus": {
+		input: "1+2i-3,", mode: Relaxed | Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: Plain, token: "1+2i-3"},
+			{ctx: RootValue, typ: Comma, token: ","},
+		},
+		pos: []Position{
+			{Byte: 6, Line: 0, Char: 6},
+			{Byte: 7, Line: 0, Char: 7},
+			{Byte: 7, Line: 0, Char: 7},
+		},
+	},
+	"number-complex-second-tail": {
+		input: "1+2ix,", mode: Relaxed | Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: Plain, token: "1+2ix"},
+			{ctx: RootValue, typ: Comma, token: ","},
+		},
+		pos: []Position{
+			{Byte: 5, Line: 0, Char: 5},
+			{Byte: 6, Line: 0, Char: 6},
+			{Byte: 6, Line: 0, Char: 6},
+		},
+	},
 
 	// Simple strings.
 	"string-short": {
-		input: "hi", json: Json5,
-		expect: []token{{typ: String, token: "hi"}},
+		input: "hi", mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "hi"}},
 		pos: []Position{
 			{Byte: 2, Line: 0, Char: 2},
 			{Byte: 2, Line: 0, Char: 2},
 		},
 	},
 	"string-word": {
-		input: "hello", json: Json5,
-		expect: []token{{typ: String, token: "hello"}},
+		input: "hello", mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "hello"}},
 		pos: []Position{
 			{Byte: 5, Line: 0, Char: 5},
 			{Byte: 5, Line: 0, Char: 5},
 		},
 	},
 	"string-word-space": {
-		input: uspaces + "hello" + uspaces_, json: Json5,
-		expect: []token{{typ: String, token: "hello"}},
+		input: uspaces + "hello" + uspaces_, mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "hello"}},
 		pos: []Position{
 			{Byte: 39, Line: 6, Char: 2},
 			{Byte: 39, Line: 6, Char: 2},
 		},
 	},
 	"string-word-newline": {
-		input: "\nhello", json: Json5,
-		expect: []token{{typ: String, token: "hello"}},
+		input: "\nhello", mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "hello"}},
 		pos: []Position{
 			{Byte: 6, Line: 1, Char: 5},
 			{Byte: 6, Line: 1, Char: 5},
 		},
 	},
 	"string-word-comma": {
-		input: " hello ,", json: Json5,
-		expect: []token{
-			{typ: String, token: "hello"}, {typ: Comma, token: ","},
+		input: " hello ,", mode: Relaxed,
+		expect: []Token{
+			{ctx: RootValue, typ: Plain, token: "hello"},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 7, Line: 0, Char: 7},
@@ -1154,25 +1330,26 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"string-words": {
-		input: "hello world", json: Json5,
-		expect: []token{{typ: String, token: "hello world"}},
+		input: "hello world", mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "hello world"}},
 		pos: []Position{
 			{Byte: 11, Line: 0, Char: 11},
 			{Byte: 11, Line: 0, Char: 11},
 		},
 	},
 	"string-words-space": {
-		input: uspaces + "hello world" + uspaces_, json: Json5,
-		expect: []token{{typ: String, token: "hello world"}},
+		input: uspaces + "hello world" + uspaces_, mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "hello world"}},
 		pos: []Position{
 			{Byte: 45, Line: 6, Char: 2},
 			{Byte: 45, Line: 6, Char: 2},
 		},
 	},
 	"string-words-comma": {
-		input: " hello world ,", json: Json5,
-		expect: []token{
-			{typ: String, token: "hello world"}, {typ: Comma, token: ","},
+		input: " hello world ,", mode: Relaxed,
+		expect: []Token{
+			{ctx: RootValue, typ: Plain, token: "hello world"},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 13, Line: 0, Char: 13},
@@ -1183,9 +1360,9 @@ var scanTestCases = map[string]scanParams{
 	"string-text": {
 		input: "A long sentence that represents a typical " +
 			"description field without any escaping needed here.",
-		json: Json5,
-		expect: []token{{
-			typ: String,
+		mode: Relaxed,
+		expect: []Token{{
+			ctx: RootValue, typ: Plain,
 			token: "A long sentence that represents a typical " +
 				"description field without any escaping needed here.",
 		}},
@@ -1195,9 +1372,9 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"string-text-raw": {
-		input: "hello 'world'" + uescapes_, json: Json5,
-		expect: []token{{
-			typ: String, token: "hello 'world'" + uescapes,
+		input: "hello 'world'" + uescapes_, mode: Relaxed,
+		expect: []Token{{
+			ctx: RootValue, typ: Plain, token: "hello 'world'" + uescapes,
 		}},
 		pos: []Position{
 			{Byte: 33, Line: 0, Char: 33},
@@ -1205,9 +1382,9 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"string-text-escape": {
-		input: "hello 'world'" + uescapes, json: Json5,
-		expect: []token{{
-			typ: String, token: "hello 'world'" + uescapes,
+		input: "hello 'world'" + uescapes, mode: Relaxed,
+		expect: []Token{{
+			ctx: RootValue, typ: Plain, token: "hello 'world'" + uescapes,
 		}},
 		pos: []Position{
 			{Byte: 23, Line: 1, Char: 9},
@@ -1217,9 +1394,9 @@ var scanTestCases = map[string]scanParams{
 	"string-text-escape-rare": {
 		input: "First segment of about forty characters long. " +
 			"'Then' second segment of equal length too.",
-		json: Json5,
-		expect: []token{{
-			typ: String,
+		mode: Relaxed,
+		expect: []Token{{
+			ctx: RootValue, typ: Plain,
 			token: "First segment of about forty characters long. " +
 				"'Then' second segment of equal length too.",
 		}},
@@ -1229,17 +1406,18 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"string-text-escape-known": {
-		input: "hello\\nworld", json: Json5,
-		expect: []token{{typ: String, token: "hello\nworld"}},
+		input: "hello\\nworld", mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "hello\nworld"}},
 		pos: []Position{
 			{Byte: 12, Line: 0, Char: 12},
 			{Byte: 12, Line: 0, Char: 12},
 		},
 	},
 	"string-text-escape-known-delim": {
-		input: "hello\\nworld,", json: Json5,
-		expect: []token{
-			{typ: String, token: "hello\nworld"}, {typ: Comma, token: ","},
+		input: "hello\\nworld,", mode: Relaxed,
+		expect: []Token{
+			{ctx: RootValue, typ: Plain, token: "hello\nworld"},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 12, Line: 0, Char: 12},
@@ -1248,9 +1426,10 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"string-text-escape-delim": {
-		input: "hello\\n,", json: Json5,
-		expect: []token{
-			{typ: String, token: "hello\n"}, {typ: Comma, token: ","},
+		input: "hello\\n,", mode: Relaxed,
+		expect: []Token{
+			{ctx: RootValue, typ: Plain, token: "hello\n"},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 7, Line: 0, Char: 7},
@@ -1259,16 +1438,18 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"string-text-escape-unicode": {
-		input: "hi\\u0041bye", json: Json5,
-		expect: []token{{typ: String, token: "hiAbye"}},
+		input: "hi\\u0041bye", mode: Relaxed,
+		expect: []Token{{ctx: RootValue, typ: Plain, token: "hiAbye"}},
 		pos: []Position{
 			{Byte: 11, Line: 0, Char: 11},
 			{Byte: 11, Line: 0, Char: 11},
 		},
 	},
 	"string-text-escape-probe-unknown": {
-		input: "hello\\n\\qworld", json: Json5,
-		expect: []token{{typ: String, token: "hello\n\\qworld"}},
+		input: "hello\\n\\qworld", mode: Relaxed,
+		expect: []Token{
+			{ctx: RootValue, typ: Plain, token: "hello\n\\qworld"},
+		},
 		pos: []Position{
 			{Byte: 14, Line: 0, Char: 14},
 			{Byte: 14, Line: 0, Char: 14},
@@ -1277,41 +1458,46 @@ var scanTestCases = map[string]scanParams{
 
 	// Single quoted strings.
 	"string-quote-single-short": {
-		input: "'hi'", json: Json,
-		expect: []token{{typ: String, token: "hi"}},
+		input: "'hi'", mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: Quote, token: "hi"}},
 		pos: []Position{
 			{Byte: 4, Line: 0, Char: 4},
 			{Byte: 4, Line: 0, Char: 4},
 		},
 	},
 	"string-quote-single-word": {
-		input: "'hello!'", json: Json,
-		expect: []token{{typ: String, token: "hello!"}},
+		input: "'hello!'", mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: Quote, token: "hello!"}},
 		pos: []Position{
 			{Byte: 8, Line: 0, Char: 8},
 			{Byte: 8, Line: 0, Char: 8},
 		},
 	},
 	"string-quote-single-words": {
-		input: "'hello \"world\"'", json: Json5,
-		expect: []token{{typ: String, token: "hello \"world\""}},
+		input: "'hello \"world\"'", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: Quote, token: "hello \"world\""},
+		},
 		pos: []Position{
 			{Byte: 15, Line: 0, Char: 15},
 			{Byte: 15, Line: 0, Char: 15},
 		},
 	},
 	"string-quote-single-space": {
-		input: uspaces + "'hello \\'world\\''" + uspaces_, json: Json5,
-		expect: []token{{typ: String, token: "hello 'world'"}},
+		input: uspaces + "'hello \\'world\\''" + uspaces_, mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: Quote, token: "hello 'world'"},
+		},
 		pos: []Position{
 			{Byte: 34, Line: 3, Char: 19},
 			{Byte: 51, Line: 6, Char: 2},
 		},
 	},
 	"string-quote-single-comma": {
-		input: "'hello \\'world\\'' ,", json: Json5,
-		expect: []token{
-			{typ: String, token: "hello 'world'"}, {typ: Comma, token: ","},
+		input: "'hello \\'world\\'' ,", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: Quote, token: "hello 'world'"},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 17, Line: 0, Char: 17},
@@ -1322,9 +1508,9 @@ var scanTestCases = map[string]scanParams{
 	"string-quote-single-text": {
 		input: "'A long sentence that represents a typical " +
 			"description field without any escaping needed here.'",
-		json: Json,
-		expect: []token{{
-			typ: String,
+		mode: Strict,
+		expect: []Token{{
+			ctx: RootValue, typ: Quote,
 			token: "A long sentence that represents a typical " +
 				"description field without any escaping needed here.",
 		}},
@@ -1334,9 +1520,9 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"string-quote-single-raw": {
-		input: "'hello \\'world\\'" + uescapes_ + "'", json: Json5Ext,
-		expect: []token{{
-			typ: String, token: "hello 'world'" + uescapes,
+		input: "'hello \\'world\\'" + uescapes_ + "'", mode: Extended,
+		expect: []Token{{
+			ctx: RootValue, typ: Quote, token: "hello 'world'" + uescapes,
 		}},
 		pos: []Position{
 			{Byte: 37, Line: 0, Char: 37},
@@ -1344,9 +1530,9 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"string-quote-single-escape": {
-		input: "'hello \\'world\\'" + uescapes + "'", json: Json5Ext,
-		expect: []token{{
-			typ: String, token: "hello 'world'" + uescapes,
+		input: "'hello \\'world\\'" + uescapes + "'", mode: Extended,
+		expect: []Token{{
+			ctx: RootValue, typ: Quote, token: "hello 'world'" + uescapes,
 		}},
 		pos: []Position{
 			{Byte: 27, Line: 1, Char: 10},
@@ -1356,9 +1542,9 @@ var scanTestCases = map[string]scanParams{
 	"string-quote-single-escape-rare": {
 		input: "'First segment of about forty characters long. " +
 			"\\'Then\\' second segment of equal length too.'",
-		json: Json,
-		expect: []token{{
-			typ: String,
+		mode: Strict,
+		expect: []Token{{
+			ctx: RootValue, typ: Quote,
 			token: "First segment of about forty characters long. " +
 				"'Then' second segment of equal length too.",
 		}},
@@ -1368,68 +1554,68 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"string-quote-single-bulk-unicode": {
-		input: "'\\u0041'", json: Json5,
-		expect: []token{{typ: String, token: "A"}},
+		input: "'\\u0041'", mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: Quote, token: "A"}},
 		pos: []Position{
 			{Byte: 8, Line: 0, Char: 8},
 			{Byte: 8, Line: 0, Char: 8},
 		},
 	},
 	"string-quote-single-newline": {
-		input: "'hello\nworld'", json: Json5,
-		expect: []token{{typ: String, token: "hello\nworld"}},
+		input: "'hello\nworld'", mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: Quote, token: "hello\nworld"}},
 		pos: []Position{
 			{Byte: 13, Line: 1, Char: 6},
 			{Byte: 13, Line: 1, Char: 6},
 		},
 	},
 	"string-quote-single-newline-short": {
-		input: "'\n'", json: Json5,
-		expect: []token{{typ: String, token: "\n"}},
+		input: "'\n'", mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: Quote, token: "\n"}},
 		pos: []Position{
 			{Byte: 3, Line: 1, Char: 1},
 			{Byte: 3, Line: 1, Char: 1},
 		},
 	},
 	"string-quote-single-eof": {
-		input: "'hello", json: Json5,
-		expect: []token{{typ: EOF, token: ""}},
+		input: "'hello", mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: EOF, token: ""}},
 		pos: []Position{
 			{Byte: 0, Line: 0, Char: 0},
 			{Byte: 0, Line: 0, Char: 0},
 		},
 	},
 	"string-quote-single-eof-escape": {
-		input: "'hello\\", json: Json5,
-		expect: []token{{typ: EOF, token: ""}},
+		input: "'hello\\", mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: EOF, token: ""}},
 		pos: []Position{
 			{Byte: 0, Line: 0, Char: 0},
 			{Byte: 0, Line: 0, Char: 0},
 		},
 	},
 	"string-quote-single-eof-probe": {
-		input: "'hello\\n", json: Json5,
-		expect: []token{{typ: EOF, token: ""}},
+		input: "'hello\\n", mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: EOF, token: ""}},
 		pos: []Position{
 			{Byte: 0, Line: 0, Char: 0},
 			{Byte: 0, Line: 0, Char: 0},
 		},
 	},
 	"string-quote-single-probe-unknown": {
-		input: "'hello\\n\\q'", json: Json5,
-		expect: []token{{
-			typ: String, token: "hello\n\\q",
-		}},
+		input: "'hello\\n\\q'", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: Quote, token: "hello\n\\q"},
+		},
 		pos: []Position{
 			{Byte: 11, Line: 0, Char: 11},
 			{Byte: 11, Line: 0, Char: 11},
 		},
 	},
 	"string-quote-single-probe-unicode": {
-		input: "'hello\\n\\u0041'", json: Json5,
-		expect: []token{{
-			typ: String, token: "hello\nA",
-		}},
+		input: "'hello\\n\\u0041'", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: Quote, token: "hello\nA"},
+		},
 		pos: []Position{
 			{Byte: 15, Line: 0, Char: 15},
 			{Byte: 15, Line: 0, Char: 15},
@@ -1438,41 +1624,42 @@ var scanTestCases = map[string]scanParams{
 
 	// Double quoted strings.
 	"string-quote-double-short": {
-		input: "\"hi\"", json: Json,
-		expect: []token{{typ: String, token: "hi"}},
+		input: "\"hi\"", mode: Json,
+		expect: []Token{{ctx: RootValue, typ: String, token: "hi"}},
 		pos: []Position{
 			{Byte: 4, Line: 0, Char: 4},
 			{Byte: 4, Line: 0, Char: 4},
 		},
 	},
 	"string-quote-double-word": {
-		input: "\"hello!\"", json: Json,
-		expect: []token{{typ: String, token: "hello!"}},
+		input: "\"hello!\"", mode: Json,
+		expect: []Token{{ctx: RootValue, typ: String, token: "hello!"}},
 		pos: []Position{
 			{Byte: 8, Line: 0, Char: 8},
 			{Byte: 8, Line: 0, Char: 8},
 		},
 	},
 	"string-quote-double-words": {
-		input: "\"hello world\"", json: Json,
-		expect: []token{{typ: String, token: "hello world"}},
+		input: "\"hello world\"", mode: Json,
+		expect: []Token{{ctx: RootValue, typ: String, token: "hello world"}},
 		pos: []Position{
 			{Byte: 13, Line: 0, Char: 13},
 			{Byte: 13, Line: 0, Char: 13},
 		},
 	},
 	"string-quote-double-space": {
-		input: uspaces + "\"hello world\"" + uspaces_, json: Json,
-		expect: []token{{typ: String, token: "hello world"}},
+		input: uspaces + "\"hello world\"" + uspaces_, mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: String, token: "hello world"}},
 		pos: []Position{
 			{Byte: 30, Line: 3, Char: 15},
 			{Byte: 47, Line: 6, Char: 2},
 		},
 	},
 	"string-quote-double-comma": {
-		input: "\"hello world\" ,", json: Json5,
-		expect: []token{
-			{typ: String, token: "hello world"}, {typ: Comma, token: ","},
+		input: "\"hello world\" ,", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: String, token: "hello world"},
+			{ctx: RootValue, typ: Comma, token: ","},
 		},
 		pos: []Position{
 			{Byte: 13, Line: 0, Char: 13},
@@ -1483,9 +1670,9 @@ var scanTestCases = map[string]scanParams{
 	"string-quote-double-text": {
 		input: "\"A long sentence that represents a typical " +
 			"description field without any escaping needed here.\"",
-		json: Json,
-		expect: []token{{
-			typ: String,
+		mode: Strict,
+		expect: []Token{{
+			ctx: RootValue, typ: String,
 			token: "A long sentence that represents a typical " +
 				"description field without any escaping needed here.",
 		}},
@@ -1495,20 +1682,20 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"string-quote-double-raw": {
-		input: "\"hello \\\"world\\\"" + uescapes_ + "\"", json: Json5,
-		expect: []token{{
-			typ: String, token: "hello \"world\"" + uescapes,
-		}},
+		input: "\"hello \\\"world\\\"" + uescapes_ + "\"", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: String, token: "hello \"world\"" + uescapes},
+		},
 		pos: []Position{
 			{Byte: 37, Line: 0, Char: 37},
 			{Byte: 37, Line: 0, Char: 37},
 		},
 	},
 	"string-quote-double-escape": {
-		input: "\"hello \\\"world\\\"" + uescapes + "\"", json: Json5,
-		expect: []token{{
-			typ: String, token: "hello \"world\"" + uescapes,
-		}},
+		input: "\"hello \\\"world\\\"" + uescapes + "\"", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: String, token: "hello \"world\"" + uescapes},
+		},
 		pos: []Position{
 			{Byte: 27, Line: 1, Char: 10},
 			{Byte: 27, Line: 1, Char: 10},
@@ -1517,9 +1704,9 @@ var scanTestCases = map[string]scanParams{
 	"string-quote-double-escape-rare": {
 		input: "\"First segment of about forty characters long. " +
 			"\\\"Then\\\" second segment of equal length too.\"",
-		json: Json,
-		expect: []token{{
-			typ: String,
+		mode: Strict,
+		expect: []Token{{
+			ctx: RootValue, typ: String,
 			token: "First segment of about forty characters long. " +
 				"\"Then\" second segment of equal length too.",
 		}},
@@ -1529,68 +1716,68 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"string-quote-double-bulk-unicode": {
-		input: "\"\\u0041\"", json: Json5,
-		expect: []token{{typ: String, token: "A"}},
+		input: "\"\\u0041\"", mode: Json,
+		expect: []Token{{ctx: RootValue, typ: String, token: "A"}},
 		pos: []Position{
 			{Byte: 8, Line: 0, Char: 8},
 			{Byte: 8, Line: 0, Char: 8},
 		},
 	},
 	"string-quote-double-newline": {
-		input: "\"hello\nworld\"", json: Json5,
-		expect: []token{{typ: String, token: "hello\nworld"}},
+		input: "\"hello\nworld\"", mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: String, token: "hello\nworld"}},
 		pos: []Position{
 			{Byte: 13, Line: 1, Char: 6},
 			{Byte: 13, Line: 1, Char: 6},
 		},
 	},
 	"string-quote-double-newline-short": {
-		input: "\"\n\"", json: Json5,
-		expect: []token{{typ: String, token: "\n"}},
+		input: "\"\n\"", mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: String, token: "\n"}},
 		pos: []Position{
 			{Byte: 3, Line: 1, Char: 1},
 			{Byte: 3, Line: 1, Char: 1},
 		},
 	},
 	"string-quote-double-eof": {
-		input: "\"hello", json: Json5,
-		expect: []token{{typ: EOF, token: ""}},
+		input: "\"hello", mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: EOF, token: ""}},
 		pos: []Position{
 			{Byte: 0, Line: 0, Char: 0},
 			{Byte: 0, Line: 0, Char: 0},
 		},
 	},
 	"string-quote-double-eof-escape": {
-		input: "\"hello\\", json: Json5,
-		expect: []token{{typ: EOF, token: ""}},
+		input: "\"hello\\", mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: EOF, token: ""}},
 		pos: []Position{
 			{Byte: 0, Line: 0, Char: 0},
 			{Byte: 0, Line: 0, Char: 0},
 		},
 	},
 	"string-quote-double-eof-probe": {
-		input: "\"hello\\n", json: Json5,
-		expect: []token{{typ: EOF, token: ""}},
+		input: "\"hello\\n", mode: Strict,
+		expect: []Token{{ctx: RootValue, typ: EOF, token: ""}},
 		pos: []Position{
 			{Byte: 0, Line: 0, Char: 0},
 			{Byte: 0, Line: 0, Char: 0},
 		},
 	},
 	"string-quote-double-probe-unknown": {
-		input: "\"hello\\n\\q\"", json: Json5,
-		expect: []token{{
-			typ: String, token: "hello\n\\q",
-		}},
+		input: "\"hello\\n\\q\"", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: String, token: "hello\n\\q"},
+		},
 		pos: []Position{
 			{Byte: 11, Line: 0, Char: 11},
 			{Byte: 11, Line: 0, Char: 11},
 		},
 	},
 	"string-quote-double-probe-unicode": {
-		input: "\"hello\\n\\u0041\"", json: Json5,
-		expect: []token{{
-			typ: String, token: "hello\nA",
-		}},
+		input: "\"hello\\n\\u0041\"", mode: Json,
+		expect: []Token{
+			{ctx: RootValue, typ: String, token: "hello\nA"},
+		},
 		pos: []Position{
 			{Byte: 15, Line: 0, Char: 15},
 			{Byte: 15, Line: 0, Char: 15},
@@ -1599,9 +1786,10 @@ var scanTestCases = map[string]scanParams{
 
 	// Simple and complex arrays.
 	"array-empty": {
-		input: "[]", json: Json,
-		expect: []token{
-			{typ: ArrayStart, token: "["}, {typ: ArrayEnd, token: "]"},
+		input: "[]", mode: Json,
+		expect: []Token{
+			{ctx: RootValue, typ: ArrayStart, token: "["},
+			{ctx: ArrayValue, typ: ArrayEnd, token: "]"},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -1610,9 +1798,10 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"array-empty-space": {
-		input: uspaces + "[ ]" + uspaces_, json: Json,
-		expect: []token{
-			{typ: ArrayStart, token: "["}, {typ: ArrayEnd, token: "]"},
+		input: uspaces + "[ ]" + uspaces_, mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: ArrayStart, token: "["},
+			{ctx: ArrayValue, typ: ArrayEnd, token: "]"},
 		},
 		pos: []Position{
 			{Byte: 18, Line: 3, Char: 3},
@@ -1621,15 +1810,15 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"array-token": {
-		input: "[null,true,false]", json: Json,
-		expect: []token{
-			{typ: ArrayStart, token: "["},
-			{typ: Null, token: "null"},
-			{typ: Comma, token: ","},
-			{typ: True, token: "true"},
-			{typ: Comma, token: ","},
-			{typ: False, token: "false"},
-			{typ: ArrayEnd, token: "]"},
+		input: "[null,true,false]", mode: Json,
+		expect: []Token{
+			{ctx: RootValue, typ: ArrayStart, token: "["},
+			{ctx: ArrayValue, typ: Null, token: "null"},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: True, token: "true"},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: False, token: "false"},
+			{ctx: ArrayValue, typ: ArrayEnd, token: "]"},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -1643,15 +1832,15 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"array-token-space": {
-		input: "[ null , true , false ]", json: Json,
-		expect: []token{
-			{typ: ArrayStart, token: "["},
-			{typ: Null, token: "null"},
-			{typ: Comma, token: ","},
-			{typ: True, token: "true"},
-			{typ: Comma, token: ","},
-			{typ: False, token: "false"},
-			{typ: ArrayEnd, token: "]"},
+		input: "[ null , true , false ]", mode: Json,
+		expect: []Token{
+			{ctx: RootValue, typ: ArrayStart, token: "["},
+			{ctx: ArrayValue, typ: Null, token: "null"},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: True, token: "true"},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: False, token: "false"},
+			{ctx: ArrayValue, typ: ArrayEnd, token: "]"},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -1665,13 +1854,13 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"array-string": {
-		input: "[\"hello\",\"world\"]", json: Json,
-		expect: []token{
-			{typ: ArrayStart, token: "["},
-			{typ: String, token: "hello"},
-			{typ: Comma, token: ","},
-			{typ: String, token: "world"},
-			{typ: ArrayEnd, token: "]"},
+		input: "[\"hello\",\"world\"]", mode: Json,
+		expect: []Token{
+			{ctx: RootValue, typ: ArrayStart, token: "["},
+			{ctx: ArrayValue, typ: String, token: "hello"},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: String, token: "world"},
+			{ctx: ArrayValue, typ: ArrayEnd, token: "]"},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -1683,13 +1872,13 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"array-string-space": {
-		input: "[ \"hello\" , \"world\" ]", json: Json,
-		expect: []token{
-			{typ: ArrayStart, token: "["},
-			{typ: String, token: "hello"},
-			{typ: Comma, token: ","},
-			{typ: String, token: "world"},
-			{typ: ArrayEnd, token: "]"},
+		input: "[ \"hello\" , \"world\" ]", mode: Json,
+		expect: []Token{
+			{ctx: RootValue, typ: ArrayStart, token: "["},
+			{ctx: ArrayValue, typ: String, token: "hello"},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: String, token: "world"},
+			{ctx: ArrayValue, typ: ArrayEnd, token: "]"},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -1701,13 +1890,13 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"array-number": {
-		input: "[9,0.123e-4]", json: Json5Ext,
-		expect: []token{
-			{typ: ArrayStart, token: "["},
-			{typ: Integer, token: "9"},
-			{typ: Comma, token: ","},
-			{typ: Decimal, token: "0.123e-4"},
-			{typ: ArrayEnd, token: "]"},
+		input: "[9,0.123e-4]", mode: Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: ArrayStart, token: "["},
+			{ctx: ArrayValue, typ: Integer, token: "9"},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: Decimal, token: "0.123e-4"},
+			{ctx: ArrayValue, typ: ArrayEnd, token: "]"},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -1719,13 +1908,13 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"array-number-space": {
-		input: "[ 9 , 0.123e-4 ]", json: Json5Ext,
-		expect: []token{
-			{typ: ArrayStart, token: "["},
-			{typ: Integer, token: "9"},
-			{typ: Comma, token: ","},
-			{typ: Decimal, token: "0.123e-4"},
-			{typ: ArrayEnd, token: "]"},
+		input: "[ 9 , 0.123e-4 ]", mode: Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: ArrayStart, token: "["},
+			{ctx: ArrayValue, typ: Integer, token: "9"},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: Decimal, token: "0.123e-4"},
+			{ctx: ArrayValue, typ: ArrayEnd, token: "]"},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -1737,17 +1926,17 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"array-number-ext": {
-		input: "[NaN,Infinity,0x1a3f,1+2i]", json: Json5Ext,
-		expect: []token{
-			{typ: ArrayStart, token: "["},
-			{typ: NaN, token: "NaN"},
-			{typ: Comma, token: ","},
-			{typ: Infinity, token: "Infinity"},
-			{typ: Comma, token: ","},
-			{typ: HexaDecimal, token: "0x1a3f"},
-			{typ: Comma, token: ","},
-			{typ: Complex, token: "1+2i"},
-			{typ: ArrayEnd, token: "]"},
+		input: "[NaN,Infinity,0x1a3f,1+2i]", mode: Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: ArrayStart, token: "["},
+			{ctx: ArrayValue, typ: NaN, token: "NaN"},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: Infinity, token: "Infinity"},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: HexaDecimal, token: "0x1a3f"},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: Complex, token: "1+2i"},
+			{ctx: ArrayValue, typ: ArrayEnd, token: "]"},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -1763,17 +1952,17 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"array-number-ext-space": {
-		input: "[ NaN , Infinity , 0x1a3f , 1+2i ]", json: Json5Ext,
-		expect: []token{
-			{typ: ArrayStart, token: "["},
-			{typ: NaN, token: "NaN"},
-			{typ: Comma, token: ","},
-			{typ: Infinity, token: "Infinity"},
-			{typ: Comma, token: ","},
-			{typ: HexaDecimal, token: "0x1a3f"},
-			{typ: Comma, token: ","},
-			{typ: Complex, token: "1+2i"},
-			{typ: ArrayEnd, token: "]"},
+		input: "[ NaN , Infinity , 0x1a3f , 1+2i ]", mode: Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: ArrayStart, token: "["},
+			{ctx: ArrayValue, typ: NaN, token: "NaN"},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: Infinity, token: "Infinity"},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: HexaDecimal, token: "0x1a3f"},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: Complex, token: "1+2i"},
+			{ctx: ArrayValue, typ: ArrayEnd, token: "]"},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -1789,15 +1978,15 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"array-object-empty": {
-		input: "[{},{}]", json: Json,
-		expect: []token{
-			{typ: ArrayStart, token: "["},
-			{typ: ObjectStart, token: "{"},
-			{typ: ObjectEnd, token: "}"},
-			{typ: Comma, token: ","},
-			{typ: ObjectStart, token: "{"},
-			{typ: ObjectEnd, token: "}"},
-			{typ: ArrayEnd, token: "]"},
+		input: "[{},{}]", mode: Json,
+		expect: []Token{
+			{ctx: RootValue, typ: ArrayStart, token: "["},
+			{ctx: ArrayValue, typ: ObjectStart, token: "{"},
+			{ctx: ObjectKey, typ: ObjectEnd, token: "}"},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: ObjectStart, token: "{"},
+			{ctx: ObjectKey, typ: ObjectEnd, token: "}"},
+			{ctx: ArrayValue, typ: ArrayEnd, token: "]"},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -1811,15 +2000,15 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"array-object-minimal": {
-		input: "[{\"key\":\"value\"}]", json: Json,
-		expect: []token{
-			{typ: ArrayStart, token: "["},
-			{typ: ObjectStart, token: "{"},
-			{typ: String, token: "key"},
-			{typ: Colon, token: ":"},
-			{typ: String, token: "value"},
-			{typ: ObjectEnd, token: "}"},
-			{typ: ArrayEnd, token: "]"},
+		input: "[{\"key\":\"value\"}]", mode: Json,
+		expect: []Token{
+			{ctx: RootValue, typ: ArrayStart, token: "["},
+			{ctx: ArrayValue, typ: ObjectStart, token: "{"},
+			{ctx: ObjectKey, typ: String, token: "key"},
+			{ctx: ObjectColon, typ: Colon, token: ":"},
+			{ctx: ObjectValue, typ: String, token: "value"},
+			{ctx: ObjectKey, typ: ObjectEnd, token: "}"},
+			{ctx: ArrayValue, typ: ArrayEnd, token: "]"},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -1833,18 +2022,18 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"array-object-relaxed": {
-		input: "[,{key:value,},]", json: Json5Ext,
-		expect: []token{
-			{typ: ArrayStart, token: "["},
-			{typ: Comma, token: ","},
-			{typ: ObjectStart, token: "{"},
-			{typ: String, token: "key"},
-			{typ: Colon, token: ":"},
-			{typ: String, token: "value"},
-			{typ: Comma, token: ","},
-			{typ: ObjectEnd, token: "}"},
-			{typ: Comma, token: ","},
-			{typ: ArrayEnd, token: "]"},
+		input: "[,{key:value,},]", mode: Relaxed,
+		expect: []Token{
+			{ctx: RootValue, typ: ArrayStart, token: "["},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: ObjectStart, token: "{"},
+			{ctx: ObjectKey, typ: Plain, token: "key"},
+			{ctx: ObjectColon, typ: Colon, token: ":"},
+			{ctx: ObjectValue, typ: Plain, token: "value"},
+			{ctx: ObjectKey, typ: Comma, token: ","},
+			{ctx: ObjectKey, typ: ObjectEnd, token: "}"},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: ArrayEnd, token: "]"},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -1863,14 +2052,14 @@ var scanTestCases = map[string]scanParams{
 
 	// Multi-comma array cases.
 	"array-comma-leading": {
-		input: "[,1,2]", json: Json5Ext,
-		expect: []token{
-			{typ: ArrayStart, token: "["},
-			{typ: Comma, token: ","},
-			{typ: Integer, token: "1"},
-			{typ: Comma, token: ","},
-			{typ: Integer, token: "2"},
-			{typ: ArrayEnd, token: "]"},
+		input: "[,1,2]", mode: Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: ArrayStart, token: "["},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: Integer, token: "1"},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: Integer, token: "2"},
+			{ctx: ArrayValue, typ: ArrayEnd, token: "]"},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -1883,14 +2072,14 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"array-comma-trailing": {
-		input: "[1,2,]", json: Json5Ext,
-		expect: []token{
-			{typ: ArrayStart, token: "["},
-			{typ: Integer, token: "1"},
-			{typ: Comma, token: ","},
-			{typ: Integer, token: "2"},
-			{typ: Comma, token: ","},
-			{typ: ArrayEnd, token: "]"},
+		input: "[1,2,]", mode: Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: ArrayStart, token: "["},
+			{ctx: ArrayValue, typ: Integer, token: "1"},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: Integer, token: "2"},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: ArrayEnd, token: "]"},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -1903,14 +2092,14 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"array-comma-multi": {
-		input: "[1,,2]", json: Json5Ext,
-		expect: []token{
-			{typ: ArrayStart, token: "["},
-			{typ: Integer, token: "1"},
-			{typ: Comma, token: ","},
-			{typ: Comma, token: ","},
-			{typ: Integer, token: "2"},
-			{typ: ArrayEnd, token: "]"},
+		input: "[1,,2]", mode: Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: ArrayStart, token: "["},
+			{ctx: ArrayValue, typ: Integer, token: "1"},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: Integer, token: "2"},
+			{ctx: ArrayValue, typ: ArrayEnd, token: "]"},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -1923,14 +2112,14 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"array-comma-only": {
-		input: "[,,,,]", json: Json5Ext,
-		expect: []token{
-			{typ: ArrayStart, token: "["},
-			{typ: Comma, token: ","},
-			{typ: Comma, token: ","},
-			{typ: Comma, token: ","},
-			{typ: Comma, token: ","},
-			{typ: ArrayEnd, token: "]"},
+		input: "[,,,,]", mode: Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: ArrayStart, token: "["},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: ArrayEnd, token: "]"},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -1945,9 +2134,10 @@ var scanTestCases = map[string]scanParams{
 
 	// Simple and complex objects.
 	"object-empty": {
-		input: "{}", json: Json,
-		expect: []token{
-			{typ: ObjectStart, token: "{"}, {typ: ObjectEnd, token: "}"},
+		input: "{}", mode: Json,
+		expect: []Token{
+			{ctx: RootValue, typ: ObjectStart, token: "{"},
+			{ctx: ObjectKey, typ: ObjectEnd, token: "}"},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -1956,9 +2146,10 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"object-empty-space": {
-		input: uspaces + "{ }" + uspaces_, json: Json,
-		expect: []token{
-			{typ: ObjectStart, token: "{"}, {typ: ObjectEnd, token: "}"},
+		input: uspaces + "{ }" + uspaces_, mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: ObjectStart, token: "{"},
+			{ctx: ObjectKey, typ: ObjectEnd, token: "}"},
 		},
 		pos: []Position{
 			{Byte: 18, Line: 3, Char: 3},
@@ -1966,18 +2157,86 @@ var scanTestCases = map[string]scanParams{
 			{Byte: 37, Line: 6, Char: 2},
 		},
 	},
+	"object-value-comma": {
+		input: `{"key":,}`, mode: Relaxed,
+		expect: []Token{
+			{ctx: RootValue, typ: ObjectStart, token: "{"},
+			{ctx: ObjectKey, typ: String, token: "key"},
+			{ctx: ObjectColon, typ: Colon, token: ":"},
+			{ctx: ObjectValue, typ: Zero, token: ","},
+			{ctx: ObjectKey, typ: ObjectEnd, token: "}"},
+		},
+		pos: []Position{
+			{Byte: 1, Line: 0, Char: 1},
+			{Byte: 6, Line: 0, Char: 6},
+			{Byte: 7, Line: 0, Char: 7},
+			{Byte: 8, Line: 0, Char: 8},
+			{Byte: 9, Line: 0, Char: 9},
+			{Byte: 9, Line: 0, Char: 9},
+		},
+	},
+	"object-value-end": {
+		input: `{"key":}`, mode: Relaxed,
+		expect: []Token{
+			{ctx: RootValue, typ: ObjectStart, token: "{"},
+			{ctx: ObjectKey, typ: String, token: "key"},
+			{ctx: ObjectColon, typ: Colon, token: ":"},
+			{ctx: ObjectValue, typ: Zero, token: "}"},
+		},
+		pos: []Position{
+			{Byte: 1, Line: 0, Char: 1},
+			{Byte: 6, Line: 0, Char: 6},
+			{Byte: 7, Line: 0, Char: 7},
+			{Byte: 8, Line: 0, Char: 8},
+			{Byte: 8, Line: 0, Char: 8},
+		},
+	},
+	"object-key-zero": {
+		input: `{:1}`, mode: Relaxed,
+		expect: []Token{
+			{ctx: RootValue, typ: ObjectStart, token: "{"},
+			{ctx: ObjectKey, typ: Zero, token: ":"},
+			{ctx: ObjectValue, typ: Integer, token: "1"},
+			{ctx: ObjectKey, typ: ObjectEnd, token: "}"},
+		},
+		pos: []Position{
+			{Byte: 1, Line: 0, Char: 1},
+			{Byte: 2, Line: 0, Char: 2},
+			{Byte: 3, Line: 0, Char: 3},
+			{Byte: 4, Line: 0, Char: 4},
+			{Byte: 4, Line: 0, Char: 4},
+		},
+	},
+	"object-value-comma-strict": {
+		input: `{"key":,}`, mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: ObjectStart, token: "{"},
+			{ctx: ObjectKey, typ: String, token: "key"},
+			{ctx: ObjectColon, typ: Colon, token: ":"},
+			{ctx: ObjectValue, typ: Comma, token: ","},
+			{ctx: ObjectKey, typ: ObjectEnd, token: "}"},
+		},
+		pos: []Position{
+			{Byte: 1, Line: 0, Char: 1},
+			{Byte: 6, Line: 0, Char: 6},
+			{Byte: 7, Line: 0, Char: 7},
+			{Byte: 8, Line: 0, Char: 8},
+			{Byte: 9, Line: 0, Char: 9},
+			{Byte: 9, Line: 0, Char: 9},
+		},
+	},
 	"object-simple": {
-		input: "{\"null\":null,\"key\":\"value\"}", json: Json,
-		expect: []token{
-			{typ: ObjectStart, token: "{"},
-			{typ: String, token: "null"},
-			{typ: Colon, token: ":"},
-			{typ: Null, token: "null"},
-			{typ: Comma, token: ","},
-			{typ: String, token: "key"},
-			{typ: Colon, token: ":"},
-			{typ: String, token: "value"},
-			{typ: ObjectEnd, token: "}"},
+		input: "{\"null\":null,\"key\":\"value\"}", mode: Json,
+		expect: []Token{
+			{ctx: RootValue, typ: ObjectStart, token: "{"},
+			{ctx: ObjectKey, typ: String, token: "null"},
+			{ctx: ObjectColon, typ: Colon, token: ":"},
+			{ctx: ObjectValue, typ: Null, token: "null"},
+			{ctx: ObjectKey, typ: Comma, token: ","},
+			{ctx: ObjectKey, typ: String, token: "key"},
+			{ctx: ObjectColon, typ: Colon, token: ":"},
+			{ctx: ObjectValue, typ: String, token: "value"},
+			{ctx: ObjectKey, typ: ObjectEnd, token: "}"},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -1993,17 +2252,17 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"object-simple-space": {
-		input: "{ \"null\" : null , \"key\" : \"value\" }", json: Json,
-		expect: []token{
-			{typ: ObjectStart, token: "{"},
-			{typ: String, token: "null"},
-			{typ: Colon, token: ":"},
-			{typ: Null, token: "null"},
-			{typ: Comma, token: ","},
-			{typ: String, token: "key"},
-			{typ: Colon, token: ":"},
-			{typ: String, token: "value"},
-			{typ: ObjectEnd, token: "}"},
+		input: "{ \"null\" : null , \"key\" : \"value\" }", mode: Json,
+		expect: []Token{
+			{ctx: RootValue, typ: ObjectStart, token: "{"},
+			{ctx: ObjectKey, typ: String, token: "null"},
+			{ctx: ObjectColon, typ: Colon, token: ":"},
+			{ctx: ObjectValue, typ: Null, token: "null"},
+			{ctx: ObjectKey, typ: Comma, token: ","},
+			{ctx: ObjectKey, typ: String, token: "key"},
+			{ctx: ObjectColon, typ: Colon, token: ":"},
+			{ctx: ObjectValue, typ: String, token: "value"},
+			{ctx: ObjectKey, typ: ObjectEnd, token: "}"},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -2019,14 +2278,14 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"object-array-empty": {
-		input: "{\"array\":[]}", json: Json,
-		expect: []token{
-			{typ: ObjectStart, token: "{"},
-			{typ: String, token: "array"},
-			{typ: Colon, token: ":"},
-			{typ: ArrayStart, token: "["},
-			{typ: ArrayEnd, token: "]"},
-			{typ: ObjectEnd, token: "}"},
+		input: "{\"array\":[]}", mode: Json,
+		expect: []Token{
+			{ctx: RootValue, typ: ObjectStart, token: "{"},
+			{ctx: ObjectKey, typ: String, token: "array"},
+			{ctx: ObjectColon, typ: Colon, token: ":"},
+			{ctx: ObjectValue, typ: ArrayStart, token: "["},
+			{ctx: ArrayValue, typ: ArrayEnd, token: "]"},
+			{ctx: ObjectKey, typ: ObjectEnd, token: "}"},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -2039,20 +2298,20 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"object-array-ext": {
-		input: "{:[NaN,Infinity,],:,}", json: Json5Ext,
-		expect: []token{
-			{typ: ObjectStart, token: "{"},
-			{typ: Colon, token: ":"},
-			{typ: ArrayStart, token: "["},
-			{typ: NaN, token: "NaN"},
-			{typ: Comma, token: ","},
-			{typ: Infinity, token: "Infinity"},
-			{typ: Comma, token: ","},
-			{typ: ArrayEnd, token: "]"},
-			{typ: Comma, token: ","},
-			{typ: Colon, token: ":"},
-			{typ: Comma, token: ","},
-			{typ: ObjectEnd, token: "}"},
+		input: "{:[NaN,Infinity,],:,}", mode: Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: ObjectStart, token: "{"},
+			{ctx: ObjectKey, typ: Colon, token: ":"},
+			{ctx: ObjectValue, typ: ArrayStart, token: "["},
+			{ctx: ArrayValue, typ: NaN, token: "NaN"},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: Infinity, token: "Infinity"},
+			{ctx: ArrayValue, typ: Comma, token: ","},
+			{ctx: ArrayValue, typ: ArrayEnd, token: "]"},
+			{ctx: ObjectKey, typ: Comma, token: ","},
+			{ctx: ObjectKey, typ: Colon, token: ":"},
+			{ctx: ObjectValue, typ: Comma, token: ","},
+			{ctx: ObjectKey, typ: ObjectEnd, token: "}"},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -2073,15 +2332,15 @@ var scanTestCases = map[string]scanParams{
 
 	// Multi-comma object cases.
 	"object-comma": {
-		input: "{,key:val,}", json: Json5Ext,
-		expect: []token{
-			{typ: ObjectStart, token: "{"},
-			{typ: Comma, token: ","},
-			{typ: String, token: "key"},
-			{typ: Colon, token: ":"},
-			{typ: String, token: "val"},
-			{typ: Comma, token: ","},
-			{typ: ObjectEnd, token: "}"},
+		input: "{,key:val,}", mode: Relaxed,
+		expect: []Token{
+			{ctx: RootValue, typ: ObjectStart, token: "{"},
+			{ctx: ObjectKey, typ: Comma, token: ","},
+			{ctx: ObjectKey, typ: Plain, token: "key"},
+			{ctx: ObjectColon, typ: Colon, token: ":"},
+			{ctx: ObjectValue, typ: Plain, token: "val"},
+			{ctx: ObjectKey, typ: Comma, token: ","},
+			{ctx: ObjectKey, typ: ObjectEnd, token: "}"},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -2095,19 +2354,19 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"object-comma-multi": {
-		input: "{key:val,,,other:val}", json: Json5Ext,
-		expect: []token{
-			{typ: ObjectStart, token: "{"},
-			{typ: String, token: "key"},
-			{typ: Colon, token: ":"},
-			{typ: String, token: "val"},
-			{typ: Comma, token: ","},
-			{typ: Comma, token: ","},
-			{typ: Comma, token: ","},
-			{typ: String, token: "other"},
-			{typ: Colon, token: ":"},
-			{typ: String, token: "val"},
-			{typ: ObjectEnd, token: "}"},
+		input: "{key:val,,,other:val}", mode: Relaxed,
+		expect: []Token{
+			{ctx: RootValue, typ: ObjectStart, token: "{"},
+			{ctx: ObjectKey, typ: Plain, token: "key"},
+			{ctx: ObjectColon, typ: Colon, token: ":"},
+			{ctx: ObjectValue, typ: Plain, token: "val"},
+			{ctx: ObjectKey, typ: Comma, token: ","},
+			{ctx: ObjectKey, typ: Comma, token: ","},
+			{ctx: ObjectKey, typ: Comma, token: ","},
+			{ctx: ObjectKey, typ: Plain, token: "other"},
+			{ctx: ObjectColon, typ: Colon, token: ":"},
+			{ctx: ObjectValue, typ: Plain, token: "val"},
+			{ctx: ObjectKey, typ: ObjectEnd, token: "}"},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -2125,12 +2384,12 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"object-comma-only": {
-		input: "{,,}", json: Json5Ext,
-		expect: []token{
-			{typ: ObjectStart, token: "{"},
-			{typ: Comma, token: ","},
-			{typ: Comma, token: ","},
-			{typ: ObjectEnd, token: "}"},
+		input: "{,,}", mode: Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: ObjectStart, token: "{"},
+			{ctx: ObjectKey, typ: Comma, token: ","},
+			{ctx: ObjectKey, typ: Comma, token: ","},
+			{ctx: ObjectKey, typ: ObjectEnd, token: "}"},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -2143,21 +2402,21 @@ var scanTestCases = map[string]scanParams{
 
 	// Object keys that are also values.
 	"object-token": {
-		input: "{null:null,true:true,false:false}", json: Json,
-		expect: []token{
-			{typ: ObjectStart, token: "{"},
-			{typ: Null, token: "null"},
-			{typ: Colon, token: ":"},
-			{typ: Null, token: "null"},
-			{typ: Comma, token: ","},
-			{typ: True, token: "true"},
-			{typ: Colon, token: ":"},
-			{typ: True, token: "true"},
-			{typ: Comma, token: ","},
-			{typ: False, token: "false"},
-			{typ: Colon, token: ":"},
-			{typ: False, token: "false"},
-			{typ: ObjectEnd, token: "}"},
+		input: "{null:null,true:true,false:false}", mode: Strict,
+		expect: []Token{
+			{ctx: RootValue, typ: ObjectStart, token: "{"},
+			{ctx: ObjectKey, typ: Null, token: "null"},
+			{ctx: ObjectColon, typ: Colon, token: ":"},
+			{ctx: ObjectValue, typ: Null, token: "null"},
+			{ctx: ObjectKey, typ: Comma, token: ","},
+			{ctx: ObjectKey, typ: True, token: "true"},
+			{ctx: ObjectColon, typ: Colon, token: ":"},
+			{ctx: ObjectValue, typ: True, token: "true"},
+			{ctx: ObjectKey, typ: Comma, token: ","},
+			{ctx: ObjectKey, typ: False, token: "false"},
+			{ctx: ObjectColon, typ: Colon, token: ":"},
+			{ctx: ObjectValue, typ: False, token: "false"},
+			{ctx: ObjectKey, typ: ObjectEnd, token: "}"},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -2177,13 +2436,13 @@ var scanTestCases = map[string]scanParams{
 		},
 	},
 	"object-complex": {
-		input: "{1+2i:1+2i}", json: Json5Ext,
-		expect: []token{
-			{typ: ObjectStart, token: "{"},
-			{typ: Complex, token: "1+2i"},
-			{typ: Colon, token: ":"},
-			{typ: Complex, token: "1+2i"},
-			{typ: ObjectEnd, token: "}"},
+		input: "{1+2i:1+2i}", mode: Extended,
+		expect: []Token{
+			{ctx: RootValue, typ: ObjectStart, token: "{"},
+			{ctx: ObjectKey, typ: Complex, token: "1+2i"},
+			{ctx: ObjectColon, typ: Colon, token: ":"},
+			{ctx: ObjectValue, typ: Complex, token: "1+2i"},
+			{ctx: ObjectKey, typ: ObjectEnd, token: "}"},
 		},
 		pos: []Position{
 			{Byte: 1, Line: 0, Char: 1},
@@ -2201,34 +2460,44 @@ var scanTestCases = map[string]scanParams{
 // flexible tokenization strategies while maintaining a consistent scanning
 // loop.
 func setupScanNext(
-	quoted func(*Scanner, byte) (byte, []byte, int),
-	numbers func(*Scanner, int, []byte) (byte, int, int),
-	relaxed func(*Scanner) (byte, []byte, int),
-) func(*Scanner) (byte, []byte) {
-	return func(s *Scanner) (byte, []byte) {
+	quoted func(*scanner, byte) (byte, []byte, int),
+	numbers func(*scanner, int, []byte) (byte, int, int),
+	relaxed func(*scanner) (byte, []byte, int),
+) func(*scanner, ScanContext) (byte, []byte) {
+	return func(s *scanner, ctx ScanContext) (byte, []byte) {
+		relax := s.mode&Relaxed != 0
+		eof := s.reader.err != nil
 		if skip := s.skip(0); skip != 0 {
 			s.reader.advance(skip)
 		}
 
 		char, ok := s.reader.peek()
 		if !ok {
+			if relax && !eof && s.zeroRoot(ctx) {
+				return Zero, nil
+			}
+
 			return EOF, nil
 		}
 
 		switch mask[char] & base {
 		case delim:
-			return s.commit(char, []byte{char}, 1)
+			if relax && s.zeroToken(ctx, char) {
+				return s.commit(Zero, s.reader.tokens(1), 1)
+			}
+
+			return s.commit(char, s.reader.tokens(1), 1)
 
 		case keyword:
 			if offset, _ := s.keyword(char); offset != 0 {
-				token := s.reader.window()[:offset]
+				token := s.reader.tokens(offset)
 
 				return s.commit(char, token, offset)
 			}
 
 		case number:
 			if typ, offset, _ := numbers(s, 0, s.reader.window()); typ != EOF {
-				token := s.reader.window()[:offset]
+				token := s.reader.tokens(offset)
 
 				return s.commit(typ, token, offset)
 			}
@@ -2237,7 +2506,11 @@ func setupScanNext(
 			return s.commit(quoted(s, char))
 		}
 
-		return s.commit(relaxed(s))
+		if relax {
+			return s.commit(relaxed(s))
+		}
+
+		return EOF, nil
 	}
 }
 
@@ -2246,41 +2519,55 @@ func setupScanNext(
 // flexible tokenization strategies while maintaining a consistent scanning
 // loop.
 func setupScanNextx(
-	quoted func(*Scanner, byte) (byte, []byte, int),
-	numbers func(*Scanner, int, []byte) (byte, int, int),
-	relaxed func(*Scanner) (byte, []byte, int),
-) func(*Scanner) (byte, []byte) {
-	return func(s *Scanner) (byte, []byte) {
+	quoted func(*scanner, byte) (byte, []byte, int),
+	numbers func(*scanner, int, []byte) (byte, int, int),
+	relaxed func(*scanner) (byte, []byte, int),
+) func(*scanner, ScanContext) (byte, []byte) {
+	return func(s *scanner, ctx ScanContext) (byte, []byte) {
+		relax := s.mode&Relaxed != 0
+		eof := s.reader.err != nil
 		if skip := s.skip(0); skip != 0 {
 			s.reader.advance(skip)
 		}
 
 		ch, ok := s.reader.peek()
 		if !ok {
+			if relax && !eof && s.zeroRoot(ctx) {
+				return Zero, nil
+			}
+
 			return EOF, nil
 		}
 
 		kind := mask[ch] & base
 		//nolint:staticcheck // priority speed.
 		if kind == delim {
-			return s.commit(ch, []byte{ch}, 1)
+			if relax && s.zeroToken(ctx, ch) {
+				return s.commit(Zero, s.reader.tokens(1), 1)
+			}
+
+			return s.commit(ch, s.reader.tokens(1), 1)
 		} else if kind == strng {
 			return s.commit(quoted(s, ch))
 		} else if kind == keyword {
 			if offset, _ := s.keyword(ch); offset != 0 {
-				token := s.reader.window()[:offset]
+				token := s.reader.tokens(offset)
 
 				return s.commit(ch, token, offset)
 			}
 		} else if kind == number {
 			if typ, offset, _ := numbers(s, 0, s.reader.window()); typ != EOF {
-				token := s.reader.window()[:offset]
+				token := s.reader.tokens(offset)
 
 				return s.commit(typ, token, offset)
 			}
 		}
 
-		return s.commit(relaxed(s))
+		if relax {
+			return s.commit(relaxed(s))
+		}
+
+		return EOF, nil
 	}
 }
 
@@ -2289,11 +2576,13 @@ func setupScanNextx(
 // This allows for flexible tokenization strategies for testing while
 // maintaining a consistent scanning loop.
 func setupScanNext_(
-	quoted func(*Scanner, byte) (byte, []byte, int, int, int),
-	numbers func(*Scanner, int, []byte) (byte, int, int),
-	relaxed func(*Scanner) (byte, []byte, int, int, int),
-) func(*Scanner) (byte, []byte) {
-	return func(s *Scanner) (byte, []byte) {
+	quoted func(*scanner, byte) (byte, []byte, int, int, int),
+	numbers func(*scanner, int, []byte) (byte, int, int),
+	relaxed func(*scanner) (byte, []byte, int, int, int),
+) func(*scanner, ScanContext) (byte, []byte) {
+	return func(s *scanner, ctx ScanContext) (byte, []byte) {
+		relax := s.mode&Relaxed != 0
+		eof := s.reader.err != nil
 		offset, line, char, token := s.space_()
 		if offset != 0 {
 			return s.commit_(Space, token, offset, line, char)
@@ -2301,12 +2590,20 @@ func setupScanNext_(
 
 		ch, ok := s.reader.peek()
 		if !ok {
+			if relax && !eof && s.zeroRoot(ctx) {
+				return Zero, nil
+			}
+
 			return EOF, nil
 		}
 
 		switch mask[ch] & base {
 		case delim:
-			return s.commit_(ch, []byte{ch}, 1, 0, 1)
+			if relax && s.zeroToken(ctx, ch) {
+				return s.commit_(Zero, s.reader.tokens(1), 1, 0, 1)
+			}
+
+			return s.commit_(ch, s.reader.tokens(1), 1, 0, 1)
 
 		case comment:
 			typ, token, offset, line, char := s.comment_(0)
@@ -2316,7 +2613,7 @@ func setupScanNext_(
 
 		case keyword:
 			if offset, _ := s.keyword(ch); offset != 0 {
-				token := s.reader.window()[:offset]
+				token := s.reader.tokens(offset)
 
 				return s.commit_(ch, token, offset, 0, offset)
 			}
@@ -2324,7 +2621,7 @@ func setupScanNext_(
 		case number:
 			ch, offset, _ := numbers(s, 0, s.reader.window())
 			if ch != EOF {
-				token := s.reader.window()[:offset]
+				token := s.reader.tokens(offset)
 
 				return s.commit_(ch, token, offset, 0, offset)
 			}
@@ -2333,7 +2630,11 @@ func setupScanNext_(
 			return s.commit_(quoted(s, ch))
 		}
 
-		return s.commit_(relaxed(s))
+		if relax {
+			return s.commit_(relaxed(s))
+		}
+
+		return EOF, nil
 	}
 }
 
@@ -2342,13 +2643,15 @@ func setupScanNext_(
 // This allows for flexible tokenization strategies for testing while
 // maintaining a consistent scanning loop.
 //
-//revive:disable:max-control-nesting // prioritize performance.
+//revive:disable:max-control-nesting // prioritize speed.
 func setupScanNext_x(
-	quoted func(*Scanner, byte) (byte, []byte, int, int, int),
-	numbers func(*Scanner, int, []byte) (byte, int, int),
-	relaxed func(*Scanner) (byte, []byte, int, int, int),
-) func(*Scanner) (byte, []byte) {
-	return func(s *Scanner) (byte, []byte) {
+	quoted func(*scanner, byte) (byte, []byte, int, int, int),
+	numbers func(*scanner, int, []byte) (byte, int, int),
+	relaxed func(*scanner) (byte, []byte, int, int, int),
+) func(*scanner, ScanContext) (byte, []byte) {
+	return func(s *scanner, ctx ScanContext) (byte, []byte) {
+		relax := s.mode&Relaxed != 0
+		eof := s.reader.err != nil
 		offset, line, char, token := s.space_()
 		if offset != 0 {
 			return s.commit_(Space, token, offset, line, char)
@@ -2356,25 +2659,33 @@ func setupScanNext_x(
 
 		ch, ok := s.reader.peek()
 		if !ok {
+			if relax && !eof && s.zeroRoot(ctx) {
+				return Zero, nil
+			}
+
 			return EOF, nil
 		}
 
 		kind := mask[ch] & base
 		//nolint:staticcheck // priority speed.
 		if kind == delim {
-			return s.commit_(ch, []byte{ch}, 1, 0, 1)
+			if relax && s.zeroToken(ctx, ch) {
+				return s.commit_(Zero, s.reader.tokens(1), 1, 0, 1)
+			}
+
+			return s.commit_(ch, s.reader.tokens(1), 1, 0, 1)
 		} else if kind == strng {
 			return s.commit_(quoted(s, ch))
 		} else if kind == keyword {
 			if offset, _ := s.keyword(ch); offset != 0 {
-				token := s.reader.window()[:offset]
+				token := s.reader.tokens(offset)
 
 				return s.commit_(ch, token, offset, 0, offset)
 			}
 		} else if kind == number {
 			typ, offset, _ := numbers(s, 0, s.reader.window())
 			if typ != EOF {
-				token := s.reader.window()[:offset]
+				token := s.reader.tokens(offset)
 
 				return s.commit_(typ, token, offset, 0, offset)
 			}
@@ -2385,7 +2696,11 @@ func setupScanNext_x(
 			}
 		}
 
-		return s.commit_(relaxed(s))
+		if relax {
+			return s.commit_(relaxed(s))
+		}
+
+		return EOF, nil
 	}
 }
 
@@ -2397,7 +2712,7 @@ func setupScanNext_x(
 // EOF error at the end of the input.
 func testScanNext(
 	t *testing.T, name string, size int, skip bool,
-	next func(*Scanner) (byte, []byte),
+	next func(*scanner, ScanContext) (byte, []byte),
 	filter ...test.FilterFunc[scanParams],
 ) {
 	test.Map(t, scanTestCases).
@@ -2406,13 +2721,14 @@ func testScanNext(
 		// Filter(test.Pattern[scanParams]("next/test=token-bool-space$")).
 		Run(func(t test.Test, param scanParams) {
 			// Given
-			scanner := NewScanner(NewTestReader(
-				strings.NewReader(param.input), 1),
-				make([]byte, 0, size))
+			scanner := test.Cast[*scanner](NewScannerSource(NewTestReader(
+				strings.NewReader(param.input), 1), make([]byte, 0, size),
+			))
+			scanner.SetMode(param.mode)
 
 			pos := append([]Position{{Byte: 0, Line: 0, Char: 0}}, param.pos...)
 			expect := param.expect
-			expect = append(expect, token{typ: EOF, token: ""})
+			expect = append(expect, Token{ctx: RootValue, typ: EOF, token: ""})
 
 			skipped := 0
 			for index, expect := range expect {
@@ -2420,17 +2736,18 @@ func testScanNext(
 					expect.typ == Comment ||
 					expect.typ == CommentMulti) {
 					skipped++
+
 					continue
 				}
 
 				// When
 				before := scanner.Position()
-				typ, token := next(scanner)
+				typ, token := next(scanner, expect.ctx)
 				after := scanner.Position()
 
 				// Drain Space tokens; they are trivia not in param.expect.
 				for !skip && typ == Space {
-					typ, token = next(scanner)
+					typ, token = next(scanner, expect.ctx)
 					after = scanner.Position()
 				}
 
@@ -2446,6 +2763,7 @@ func testScanNext(
 				skipped = 0
 			}
 
+			assert.Equal(t, param.mode, scanner.GetMode())
 			assert.Equal(t, io.EOF, scanner.Error())
 		})
 }
@@ -2455,30 +2773,30 @@ func testScanNext(
 func TestScanNext(t *testing.T) {
 	size := 1 << 6
 
-	testScanNext(t, "next", size+1, true, (*Scanner).Next)
+	testScanNext(t, "next", size+1, true, (*scanner).Next)
 	testScanNext(t, "next-numbers", size+1, true, setupScanNext(
-		(*Scanner).quoted, (*Scanner).numbers, (*Scanner).relaxed),
-		filterMaxMode(Json5))
+		(*scanner).quoted, (*scanner).numbers, (*scanner).relaxed),
+		ScanModes(Strict, Json))
 	testScanNext(t, "next-quoted", size, true, setupScanNext(
-		(*Scanner).quoted, (*Scanner).number, (*Scanner).relaxed))
+		(*scanner).quoted, (*scanner).number, (*scanner).relaxed))
 	testScanNext(t, "nextx-quoted", size, true, setupScanNextx(
-		(*Scanner).quoted, (*Scanner).number, (*Scanner).relaxed))
+		(*scanner).quoted, (*scanner).number, (*scanner).relaxed))
 	testScanNext(t, "next-quotedx", size, true, setupScanNext(
-		(*Scanner).quotedx, (*Scanner).number, (*Scanner).relaxed))
+		(*scanner).quotedx, (*scanner).number, (*scanner).relaxed))
 	testScanNext(t, "next-relaxedx", size, true, setupScanNext(
-		(*Scanner).quoted, (*Scanner).number, (*Scanner).relaxedx),
-		filterMaxMode(Json5))
+		(*scanner).quoted, (*scanner).number, (*scanner).relaxedx),
+		ScanModes(Strict, Json))
 
 	testScanNext(t, "next-debug", size+1, false,
-		(*Scanner).Next_, test.All[scanParams]())
+		(*scanner).Next_, test.All[scanParams]())
 	testScanNext(t, "next-debug-quoted", size+1, false, setupScanNext_(
-		(*Scanner).quoted_, (*Scanner).number, (*Scanner).relaxed_))
+		(*scanner).quoted_, (*scanner).number, (*scanner).relaxed_))
 	testScanNext(t, "nextx-debug-quoted", size+1, false, setupScanNext_x(
-		(*Scanner).quoted_, (*Scanner).number, (*Scanner).relaxed_))
+		(*scanner).quoted_, (*scanner).number, (*scanner).relaxed_))
 	testScanNext(t, "next-debug-quotedx", size, false, setupScanNext_(
-		(*Scanner).quoted_x, (*Scanner).number, (*Scanner).relaxed_))
+		(*scanner).quoted_x, (*scanner).number, (*scanner).relaxed_))
 	testScanNext(t, "next-debug-relaxedx", size, false, setupScanNext_(
-		(*Scanner).quoted_x, (*Scanner).number, (*Scanner).relaxed_x))
+		(*scanner).quoted_x, (*scanner).number, (*scanner).relaxed_x))
 }
 
 // benchmarkScanNext benchmarks the scanning of tokens using the provided next
@@ -2487,7 +2805,7 @@ func TestScanNext(t *testing.T) {
 // the EOF error at the end of the input.
 func benchmarkScanNext(
 	b *testing.B, name string, size int,
-	next func(*Scanner) (byte, []byte),
+	next func(*scanner, ScanContext) (byte, []byte),
 	filter ...test.FilterFunc[scanParams],
 ) {
 	buffer := make([]byte, 0, size)
@@ -2498,19 +2816,18 @@ func benchmarkScanNext(
 		Benchmark(func(b *testing.B, param scanParams) func(*testing.B) {
 			// Setup
 			reader := strings.NewReader(param.input)
-			scanner := Scanner{}
+			scanner := scanner{}
 
 			b.SetBytes(reader.Size())
 
 			// Loop
 			return func(*testing.B) {
 				test.Must(reader.Seek(0, 0))
-				scanner = Scanner{
-					reader: *NewReader(buffer[:0], reader),
-				}
+				scanner.reader = *NewSource(reader, buffer[:0])
+				scanner.SetMode(param.mode)
 
 				for {
-					typ, token := next(&scanner)
+					typ, token := next(&scanner, Unknown)
 					if typ == EOF {
 						break
 					}
@@ -2525,29 +2842,29 @@ func benchmarkScanNext(
 func BenchmarkScanNext(b *testing.B) {
 	size := 1 << 12
 
-	benchmarkScanNext(b, "next", size+1, (*Scanner).Next)
+	benchmarkScanNext(b, "next", size+1, (*scanner).Next)
 	benchmarkScanNext(b, "next-numbers", size+1, setupScanNext(
-		(*Scanner).quoted, (*Scanner).numbers, (*Scanner).relaxed),
-		filterMaxMode(Json5))
+		(*scanner).quoted, (*scanner).numbers, (*scanner).relaxed),
+		ScanModes(Strict, Json))
 	benchmarkScanNext(b, "next-quoted", size, setupScanNext(
-		(*Scanner).quoted, (*Scanner).number, (*Scanner).relaxed))
+		(*scanner).quoted, (*scanner).number, (*scanner).relaxed))
 	benchmarkScanNext(b, "nextx-quoted", size, setupScanNextx(
-		(*Scanner).quoted, (*Scanner).number, (*Scanner).relaxed))
+		(*scanner).quoted, (*scanner).number, (*scanner).relaxed))
 	benchmarkScanNext(b, "next-quotedx", size, setupScanNext(
-		(*Scanner).quotedx, (*Scanner).number, (*Scanner).relaxed))
+		(*scanner).quotedx, (*scanner).number, (*scanner).relaxed))
 	benchmarkScanNext(b, "next-relaxedx", size, setupScanNext(
-		(*Scanner).quoted, (*Scanner).number, (*Scanner).relaxedx))
+		(*scanner).quoted, (*scanner).number, (*scanner).relaxedx))
 
 	benchmarkScanNext(b, "next-debug", size+1,
-		(*Scanner).Next_, test.All[scanParams]())
+		(*scanner).Next_, test.All[scanParams]())
 	benchmarkScanNext(b, "next-debug-quoted", size, setupScanNext_(
-		(*Scanner).quoted_, (*Scanner).number, (*Scanner).relaxed_))
+		(*scanner).quoted_, (*scanner).number, (*scanner).relaxed_))
 	benchmarkScanNext(b, "nextx-debug-quoted", size, setupScanNext_x(
-		(*Scanner).quoted_, (*Scanner).number, (*Scanner).relaxed_))
+		(*scanner).quoted_, (*scanner).number, (*scanner).relaxed_))
 	benchmarkScanNext(b, "next-debug-quotedx", size, setupScanNext_(
-		(*Scanner).quoted_x, (*Scanner).number, (*Scanner).relaxed_))
+		(*scanner).quoted_x, (*scanner).number, (*scanner).relaxed_))
 	benchmarkScanNext(b, "next-debug-relaxedx", size, setupScanNext_(
-		(*Scanner).quoted_x, (*Scanner).number, (*Scanner).relaxed_x))
+		(*scanner).quoted_x, (*scanner).number, (*scanner).relaxed_x))
 }
 
 // testScanFile tests the scanning of tokens from a file using the provided next
@@ -2556,21 +2873,19 @@ func BenchmarkScanNext(b *testing.B) {
 // for any errors encountered during scanning.
 func testScanFile(
 	t *testing.T, name string, size int,
-	next func(*Scanner) (byte, []byte),
+	next func(*scanner, ScanContext) (byte, []byte),
 ) {
 	test.Map(t, fileTestCase).
 		Prefix("method=" + name + "/test=").
 		Run(func(t test.Test, param fileParams) {
 			// Given
-			scanner := NewScanner(
-				getFixtureReader(t, param.path),
-				make([]byte, 0, size),
-			)
+			scanner := test.Cast[*scanner](NewScannerSource(
+				getFixtureReader(t, param.name), make([]byte, 0, size)))
 
 			tokens, chars, spaces := 0, 0, 0
 			for {
 				// When
-				typ, token := next(scanner)
+				typ, token := next(scanner, Unknown)
 
 				// Then
 				if typ == EOF {
@@ -2586,7 +2901,7 @@ func testScanFile(
 			assert.Equal(t, param.tokens, tokens, "tokens")
 			assert.Equal(t, param.chars, chars, "chars")
 			if spaces != 0 {
-				assert.Equal(t, param.space, spaces, "spaces")
+				assert.Equal(t, param.spaces, spaces, "spaces")
 			}
 			assert.Equal(t, io.EOF, scanner.Error(), "error")
 		})
@@ -2601,23 +2916,23 @@ func TestScanFile(t *testing.T) {
 
 	size := 1 << 12
 
-	testScanFile(t, "next", size, (*Scanner).Next)
+	testScanFile(t, "next", size, (*scanner).Next)
 	testScanFile(t, "next-numbers", size+1, setupScanNext(
-		(*Scanner).quoted, (*Scanner).numbers, (*Scanner).relaxed))
+		(*scanner).quoted, (*scanner).numbers, (*scanner).relaxed))
 	testScanFile(t, "next-quoted", size, setupScanNext(
-		(*Scanner).quoted, (*Scanner).number, (*Scanner).relaxed))
+		(*scanner).quoted, (*scanner).number, (*scanner).relaxed))
 	testScanFile(t, "next-quotedx", size, setupScanNext(
-		(*Scanner).quotedx, (*Scanner).number, (*Scanner).relaxed))
+		(*scanner).quotedx, (*scanner).number, (*scanner).relaxed))
 	testScanFile(t, "next-relaxedx", size, setupScanNext(
-		(*Scanner).quoted, (*Scanner).number, (*Scanner).relaxedx))
+		(*scanner).quoted, (*scanner).number, (*scanner).relaxedx))
 
-	testScanFile(t, "next-debug", size, (*Scanner).Next_)
+	testScanFile(t, "next-debug", size, (*scanner).Next_)
 	testScanFile(t, "next-debug-quoted", size, setupScanNext_(
-		(*Scanner).quoted_, (*Scanner).number, (*Scanner).relaxed_))
+		(*scanner).quoted_, (*scanner).number, (*scanner).relaxed_))
 	testScanFile(t, "next-debug-quotedx", size, setupScanNext_(
-		(*Scanner).quoted_x, (*Scanner).number, (*Scanner).relaxed_))
+		(*scanner).quoted_x, (*scanner).number, (*scanner).relaxed_))
 	testScanFile(t, "next-debug-relaxedx", size, setupScanNext_(
-		(*Scanner).quoted_x, (*Scanner).number, (*Scanner).relaxed_x))
+		(*scanner).quoted_x, (*scanner).number, (*scanner).relaxed_x))
 }
 
 // benchmarkScanFile benchmarks the scanning of tokens from a file using the
@@ -2626,29 +2941,27 @@ func TestScanFile(t *testing.T) {
 // file. It also checks for any errors encountered during scanning.
 func benchmarkScanFile(
 	b *testing.B, name string, size int,
-	next func(*Scanner) (byte, []byte),
+	next func(*scanner, ScanContext) (byte, []byte),
 ) {
 	test.Map(test.Benchmark(b), fileTestCase).
 		Prefix("method=" + name + "/test=").
 		Benchmark(func(b *testing.B, param fileParams) func(*testing.B) {
 			// Setup
-			buffer := make([]byte, size)
-			reader := getFixtureReader(b, param.path)
-			scanner := Scanner{}
+			buffer := make([]byte, 0, size)
+			reader := getFixtureReader(b, param.name)
+			scanner := scanner{}
 
 			b.SetBytes(reader.Size())
 
 			// Loop
 			return func(*testing.B) {
 				test.Must(reader.Seek(0, 0))
-				scanner = Scanner{
-					reader: *NewReader(buffer[:0], reader),
-				}
+				scanner.reader = *NewSource(reader, buffer[:0])
 
 				tokens, chars, spaces := 0, 0, 0
 				for {
 					// When
-					typ, token := next(&scanner)
+					typ, token := next(&scanner, Unknown)
 
 					// Then
 					if typ == EOF {
@@ -2678,27 +2991,27 @@ func benchmarkScanFile(
 func BenchmarkScanFile(b *testing.B) {
 	size := 8 << 10
 
-	benchmarkScanFile(b, "next", size+1, (*Scanner).Next)
+	benchmarkScanFile(b, "next", size+1, (*scanner).Next)
 	benchmarkScanFile(b, "next-numbers", size+1, setupScanNext(
-		(*Scanner).quoted, (*Scanner).numbers, (*Scanner).relaxed))
+		(*scanner).quoted, (*scanner).numbers, (*scanner).relaxed))
 	benchmarkScanFile(b, "next-quoted", size, setupScanNext(
-		(*Scanner).quoted, (*Scanner).number, (*Scanner).relaxed))
+		(*scanner).quoted, (*scanner).number, (*scanner).relaxed))
 	benchmarkScanFile(b, "nextx-quoted", size, setupScanNextx(
-		(*Scanner).quoted, (*Scanner).number, (*Scanner).relaxed))
+		(*scanner).quoted, (*scanner).number, (*scanner).relaxed))
 	benchmarkScanFile(b, "next-quotedx", size, setupScanNext(
-		(*Scanner).quotedx, (*Scanner).number, (*Scanner).relaxed))
+		(*scanner).quotedx, (*scanner).number, (*scanner).relaxed))
 	benchmarkScanFile(b, "next-relaxedx", size, setupScanNext(
-		(*Scanner).quoted, (*Scanner).number, (*Scanner).relaxedx))
+		(*scanner).quoted, (*scanner).number, (*scanner).relaxedx))
 
-	benchmarkScanFile(b, "next-debug", size+1, (*Scanner).Next_)
+	benchmarkScanFile(b, "next-debug", size+1, (*scanner).Next_)
 	benchmarkScanFile(b, "next-debug-quoted", size, setupScanNext_(
-		(*Scanner).quoted_, (*Scanner).number, (*Scanner).relaxed_))
+		(*scanner).quoted_, (*scanner).number, (*scanner).relaxed_))
 	benchmarkScanFile(b, "nextx-debug-quoted", size, setupScanNext_x(
-		(*Scanner).quoted_, (*Scanner).number, (*Scanner).relaxed_))
+		(*scanner).quoted_, (*scanner).number, (*scanner).relaxed_))
 	benchmarkScanFile(b, "next-debug-quotedx", size, setupScanNext_(
-		(*Scanner).quoted_x, (*Scanner).number, (*Scanner).relaxed_))
+		(*scanner).quoted_x, (*scanner).number, (*scanner).relaxed_))
 	benchmarkScanFile(b, "next-debug-relaxedx", size, setupScanNext_(
-		(*Scanner).quoted_x, (*Scanner).number, (*Scanner).relaxed_x))
+		(*scanner).quoted_x, (*scanner).number, (*scanner).relaxed_x))
 }
 
 //
@@ -2768,7 +3081,7 @@ var keywordTestCases = map[string]keywordParams{
 // invalid inputs to ensure correct behavior.
 func testScanKeyword(
 	t *testing.T, name string,
-	call func(*Scanner, byte) (int, int),
+	call func(*scanner, byte) (int, int),
 ) {
 	test.Map(t, keywordTestCases).
 		Prefix("method=" + name + "/test=").
@@ -2776,13 +3089,13 @@ func testScanKeyword(
 			if strings.Contains(name, "method=keywordx/") {
 				return keywords[p.char] != nil
 			}
+
 			return true
 		}).
 		Run(func(t test.Test, param keywordParams) {
 			// Given
-			scanner := NewScanner(NewTestReader(
-				strings.NewReader(param.input), 1),
-				make([]byte, 0, 64))
+			scanner := test.Cast[*scanner](NewScannerSource(NewTestReader(
+				strings.NewReader(param.input), 1), make([]byte, 0, 64)))
 			scanner.reader.extend()
 
 			// When
@@ -2804,17 +3117,16 @@ func testScanKeyword(
 // performance of the keyword scanning function for valid and invalid inputs.
 func benchmarkScanKeyword(
 	b *testing.B, name string,
-	call func(*Scanner, byte) (int, int),
+	call func(*scanner, byte) (int, int),
 ) {
 	test.Map(test.Benchmark(b), keywordTestCases).
 		Prefix("method=" + name + "/test=").
 		Filter(func(_ string, p keywordParams) bool { return p.ok }).
 		Benchmark(func(b *testing.B, param keywordParams) func(*testing.B) {
 			// Setup
-			scanner := NewScanner(
-				strings.NewReader(param.input),
-				make([]byte, 0, 64),
-			)
+			scanner := test.Cast[*scanner](NewScannerSource(
+				NewTestReader(strings.NewReader(param.input), 1),
+				make([]byte, 0, 64)))
 			scanner.reader.extend()
 
 			b.SetBytes(int64(len(param.input)))
@@ -2833,16 +3145,16 @@ func benchmarkScanKeyword(
 // keyword function and the extended keywordx function, ensuring that they
 // correctly identify valid keywords and reject invalid ones.
 func TestScanKeyword(t *testing.T) {
-	testScanKeyword(t, "keyword", (*Scanner).keyword)
-	testScanKeyword(t, "keywordx", (*Scanner).keywordx)
+	testScanKeyword(t, "keyword", (*scanner).keyword)
+	testScanKeyword(t, "keywordx", (*scanner).keywordx)
 }
 
 // BenchmarkScanKeyword benchmarks the scanning of JSON keywords using both the
 // standard keyword function and the extended keywordx function, measuring their
 // performance for valid keyword inputs.
 func BenchmarkScanKeyword(b *testing.B) {
-	benchmarkScanKeyword(b, "keyword", (*Scanner).keyword)
-	benchmarkScanKeyword(b, "keywordx", (*Scanner).keywordx)
+	benchmarkScanKeyword(b, "keyword", (*scanner).keyword)
+	benchmarkScanKeyword(b, "keywordx", (*scanner).keywordx)
 }
 
 //
@@ -2850,8 +3162,8 @@ func BenchmarkScanKeyword(b *testing.B) {
 //
 
 func setupValidNumber(
-	t test.Test, param scanParams, fail ...JsonType,
-) (string, []token) {
+	t test.Test, param scanParams, fail ...Mode,
+) (string, []Token) {
 	input, expect := param.input, slices.Clone(param.expect)
 	name := t.Name()[strings.LastIndex(t.Name(), "=")+1:]
 
@@ -2861,7 +3173,7 @@ func setupValidNumber(
 		assert.True(t, ok, "invalid big integer number: '%s'", input)
 		_, err := strconv.ParseInt(expect[0].token, 0, 64)
 		assert.NoError(t, err, "invalid integer number: '%s'", input)
-		if param.json == Json {
+		if param.mode&Json == Json {
 			err = json.Unmarshal([]byte(expect[0].token), new(big.Int))
 			assert.NoError(t, err, "invalid big integer number: '%s'", input)
 			err = json.Unmarshal([]byte(expect[0].token), new(int64))
@@ -2871,20 +3183,16 @@ func setupValidNumber(
 		if signedHexPrefixRegex.MatchString(expect[0].token) {
 			_, ok := new(big.Int).SetString(expect[0].token, 0)
 			assert.True(t, ok, "invalid big hexadecimal number: '%s'", input)
-			if param.json == Json {
-				err := json.Unmarshal([]byte(expect[0].token), new(big.Int))
-				assert.NoError(t, err,
-					"invalid big hexadecimal number: '%s'", input)
-			}
 		}
 	case Decimal:
 		_, ok := new(big.Float).SetString(expect[0].token)
 		assert.True(t, ok, "invalid big decimal number: '%s'", input)
 		_, err := strconv.ParseFloat(expect[0].token, 64)
 		assert.NoError(t, err, "invalid decimal number: '%s'", input)
-		if param.json == Json {
+		if param.mode&Json == Json {
 			if name != "number-float" &&
 				name != "number-float-zero" &&
+				name != "number-float-zero-exp" &&
 				name != "number-float-dot-start" &&
 				name != "number-float-dot-stop" &&
 				name != "number-float-space" &&
@@ -2904,26 +3212,23 @@ func setupValidNumber(
 			strings.HasPrefix(expect[0].token, "-") {
 			_, err := strconv.ParseFloat(expect[0].token[1:], 64)
 			assert.NoError(t, err, "invalid decimal number: '%s'", input)
-			if param.json == Json {
+			if param.mode&Json == Json {
 				err = json.Unmarshal([]byte(expect[0].token[1:]), new(float64))
 				assert.NoError(t, err, "invalid decimal number: '%s'", input)
 			}
 		} else {
 			_, err := strconv.ParseFloat(expect[0].token, 64)
 			assert.NoError(t, err, "invalid decimal number: '%s'", input)
-			if param.json == Json {
+			if param.mode&Json == Json {
 				err = json.Unmarshal([]byte(expect[0].token), new(float64))
 				assert.NoError(t, err, "invalid decimal number: '%s'", input)
 			}
 		}
 	case Complex:
-		token := expect[0].token
-		if strings.HasSuffix(token, "+i") || strings.HasSuffix(token, "-i") {
-			token = token[:len(token)-1] + "1i"
-		}
+		token := normcomplex(expect[0].token)
 		_, err := strconv.ParseComplex(token, 128)
 		assert.NoError(t, err, "invalid complex number: '%s'", input)
-		if param.json == Json {
+		if param.mode&Json == Json {
 			err = json.Unmarshal([]byte(token), new(complex128))
 			assert.NoError(t, err, "invalid complex number: '%s'", input)
 		}
@@ -2933,9 +3238,13 @@ func setupValidNumber(
 	}
 
 	// Could be at begin, but we want to test the json abilities.
-	if len(fail) > 0 && slices.Contains(fail, param.json) {
-		expect[0].typ = EOF
-		expect[0].token = ""
+	for _, mode := range fail {
+		if param.mode&mode == mode {
+			expect[0].typ = EOF
+			expect[0].token = ""
+
+			break
+		}
 	}
 
 	return input, expect
@@ -2943,28 +3252,29 @@ func setupValidNumber(
 
 func testScanNumber(
 	t *testing.T, name string,
-	call func(*Scanner, int, []byte) (byte, int, int),
-	fail ...JsonType,
+	call func(*scanner, int, []byte) (byte, int, int),
+	fail ...Mode,
 ) {
 	test.Map(t, scanTestCases).
 		Prefix("method=" + name + "/test=").Filter(types(Number)).
-		// Filter(test.Pattern[scanParams]("^number-dot-comma$")).
+		// Filter(test.Pattern[scanParams]("number-complex-.*$")).
 		Run(func(t test.Test, param scanParams) {
 			input, expect := setupValidNumber(t, param, fail...)
 
 			// Given
-			scanner := NewScanner(NewTestReader(
-				strings.NewReader(input), 1,
-			), make([]byte, 0, 64))
+			scanner := test.Cast[*scanner](NewScannerSource(NewTestReader(
+				strings.NewReader(input), 1), make([]byte, 0, 64)))
+			scanner.SetMode(param.mode)
 			scanner.reader.skip()
 
 			// When
 			typ, offset, _ := call(scanner, 0, scanner.reader.window())
 
 			// Then
+			assert.Equal(t, len(expect)+1, len(param.pos), "'%s'", input)
 			assert.Equal(t, string(expect[0].typ), string(typ), "'%s'", input)
 			assert.Equal(t, expect[0].token,
-				string(scanner.reader.window()[:offset]), "'%s'", input)
+				string(scanner.reader.tokens(offset)), "'%s'", input)
 		})
 }
 
@@ -2972,11 +3282,11 @@ func testScanNumber(
 // functions, ensuring that they correctly identify valid numbers and reject
 // invalid ones based on the provided test cases and JSON mode.
 func TestScanNumber(t *testing.T) {
-	testScanNumber(t, "number", (*Scanner).number)
-	testScanNumber(t, "numberx", (*Scanner).numberx)
-	testScanNumber(t, "numbery", (*Scanner).numbery)
-	testScanNumber(t, "numberz", (*Scanner).numberz)
-	testScanNumber(t, "numbers", (*Scanner).numbers, Json5Ext)
+	testScanNumber(t, "number", (*scanner).number)
+	testScanNumber(t, "numberx", (*scanner).numberx)
+	testScanNumber(t, "numbery", (*scanner).numbery)
+	testScanNumber(t, "numberz", (*scanner).numberz)
+	testScanNumber(t, "numbers", (*scanner).numbers, Extended)
 }
 
 // benchmarkScanNumber benchmarks the scanning of numbers using the provided
@@ -2985,8 +3295,8 @@ func TestScanNumber(t *testing.T) {
 // any JSON mode restrictions specified in the test cases.
 func benchmarkScanNumber(
 	b *testing.B, name string,
-	call func(*Scanner, int, []byte) (byte, int, int),
-	fail ...JsonType,
+	call func(*scanner, int, []byte) (byte, int, int),
+	fail ...Mode,
 ) {
 	var buffer [1 << 12]byte
 
@@ -2997,16 +3307,15 @@ func benchmarkScanNumber(
 			// Setup
 			input, _ := setupValidNumber(test.Benchmark(b), param, fail...)
 			reader := strings.NewReader(input)
-			scanner := Scanner{}
+			scanner := scanner{}
 
 			b.SetBytes(reader.Size())
 
 			// Loop
 			return func(*testing.B) {
 				test.Must(reader.Seek(0, 0))
-				scanner = Scanner{
-					reader: *NewReader(buffer[:0], reader),
-				}
+				scanner.reader = *NewSource(reader, buffer[:0])
+				scanner.SetMode(param.mode)
 				scanner.reader.extend()
 				window := scanner.reader.window()
 				typ, offset, skip := call(&scanner, 0, window)
@@ -3022,11 +3331,11 @@ func benchmarkScanNumber(
 // scanning functions, measuring their performance for valid number inputs while
 // considering any JSON mode restrictions specified in the test cases.
 func BenchmarkScanNumber(b *testing.B) {
-	benchmarkScanNumber(b, "number", (*Scanner).number)
-	benchmarkScanNumber(b, "numberx", (*Scanner).numberx)
-	benchmarkScanNumber(b, "numbery", (*Scanner).numbery)
-	benchmarkScanNumber(b, "numberz", (*Scanner).numberz)
-	benchmarkScanNumber(b, "numbers", (*Scanner).numbers, Json5Ext)
+	benchmarkScanNumber(b, "number", (*scanner).number)
+	benchmarkScanNumber(b, "numberx", (*scanner).numberx)
+	benchmarkScanNumber(b, "numbery", (*scanner).numbery)
+	benchmarkScanNumber(b, "numberz", (*scanner).numberz)
+	benchmarkScanNumber(b, "numbers", (*scanner).numbers, Extended)
 }
 
 //
@@ -3035,22 +3344,11 @@ func BenchmarkScanNumber(b *testing.B) {
 
 func setupValidString(
 	t test.Test, param scanParams,
-) (string, []token) {
+) (string, []Token) {
 	input, expect := param.input, slices.Clone(param.expect)
-	// name := t.Name()[strings.LastIndex(t.Name(), "=")+1:]
-
-	// if param.json == Json &&
-	// 	name != "string-quote-double-raw" &&
-	// 	name != "string-quote-double-escape" {
-	if param.json == Json {
-		if expect[0].typ == String && strings.HasPrefix(input, "\"") {
-			// Input is a quoted JSON string — validate it directly.
-			err := json.Unmarshal([]byte(input), new(string))
-			assert.NoError(t, err, "invalid string: '%s'", input)
-		} else {
-			err := json.Unmarshal([]byte("\""+expect[0].token+"\""), new(string))
-			assert.NoError(t, err, "invalid string: '%s'", input)
-		}
+	if param.mode&Json == Json && expect[0].typ == String {
+		err := json.Unmarshal([]byte(input), new(string))
+		assert.NoError(t, err, "invalid string: '%s'", input)
 	}
 
 	switch expect[0].typ {
@@ -3063,8 +3361,8 @@ func setupValidString(
 }
 
 func filterScanString(
-	quoted func(*Scanner, byte) (byte, []byte, int),
-	relaxed func(*Scanner) (byte, []byte, int),
+	quoted func(*scanner, byte) (byte, []byte, int),
+	relaxed func(*scanner) (byte, []byte, int),
 ) test.FilterFunc[scanParams] {
 	if quoted != nil && relaxed == nil {
 		return test.Pattern[scanParams]("test=string-quote-")
@@ -3072,54 +3370,57 @@ func filterScanString(
 		return test.And(test.Pattern[scanParams]("test=string-"),
 			test.Not(test.Pattern[scanParams]("test=string-quote-")))
 	}
+
 	return test.Not(test.Pattern[scanParams]("test=token-empty$"))
 }
 
 func wrapQuoted(
-	quoted func(*Scanner, byte) (byte, []byte, int),
-) func(*Scanner, byte) (byte, []byte, int) {
-	return func(s *Scanner, b byte) (byte, []byte, int) {
+	quoted func(*scanner, byte) (byte, []byte, int),
+) func(*scanner, byte) (byte, []byte, int) {
+	return func(s *scanner, b byte) (byte, []byte, int) {
 		return quoted(s, b)
 	}
 }
 
 func wrapQuoted_(
-	quoted func(*Scanner, byte) (byte, []byte, int, int, int),
-) func(*Scanner, byte) (byte, []byte, int) {
-	return func(s *Scanner, b byte) (byte, []byte, int) {
+	quoted func(*scanner, byte) (byte, []byte, int, int, int),
+) func(*scanner, byte) (byte, []byte, int) {
+	return func(s *scanner, b byte) (byte, []byte, int) {
 		typ, token, offset, _, _ := quoted(s, b)
+
 		return typ, token, offset
 	}
 }
 
 func wrapRelaxed(
-	relaxed func(*Scanner) (byte, []byte, int),
-) func(*Scanner) (byte, []byte, int) {
-	return func(s *Scanner) (byte, []byte, int) {
+	relaxed func(*scanner) (byte, []byte, int),
+) func(*scanner) (byte, []byte, int) {
+	return func(s *scanner) (byte, []byte, int) {
 		return relaxed(s)
 	}
 }
 
 func wrapRelaxed_(
-	relaxed func(*Scanner) (byte, []byte, int, int, int),
-) func(*Scanner) (byte, []byte, int) {
-	return func(s *Scanner) (byte, []byte, int) {
+	relaxed func(*scanner) (byte, []byte, int, int, int),
+) func(*scanner) (byte, []byte, int) {
+	return func(s *scanner) (byte, []byte, int) {
 		typ, token, offset, _, _ := relaxed(s)
+
 		return typ, token, offset
 	}
 }
 
 var (
-	quoted   = wrapQuoted((*Scanner).quoted)
-	quotedO  = wrapQuoted_((*Scanner).quoted_)
-	relaxed  = wrapRelaxed((*Scanner).relaxed)
-	relaxedO = wrapRelaxed_((*Scanner).relaxed_)
+	quoted   = wrapQuoted((*scanner).quoted)
+	quotedO  = wrapQuoted_((*scanner).quoted_)
+	relaxed  = wrapRelaxed((*scanner).relaxed)
+	relaxedO = wrapRelaxed_((*scanner).relaxed_)
 )
 
 func testScanString(
 	t *testing.T, name string,
-	quoted func(*Scanner, byte) (byte, []byte, int),
-	relaxed func(*Scanner) (byte, []byte, int),
+	quoted func(*scanner, byte) (byte, []byte, int),
+	relaxed func(*scanner) (byte, []byte, int),
 ) {
 	test.Map(t, scanTestCases).
 		Prefix("method=" + name + "/test=").Filter(types(Quoted)).
@@ -3128,8 +3429,9 @@ func testScanString(
 			input, expect := setupValidString(t, param)
 
 			// Given
-			scanner := NewScanner(
-				strings.NewReader(input), make([]byte, 0, 64))
+			scanner := test.Cast[*scanner](NewScannerSource(
+				strings.NewReader(input), make([]byte, 0, 64)))
+			scanner.SetMode(param.mode)
 			scanner.reader.skip()
 			window := scanner.reader.window()
 			typ, buffer, offset := byte(0), []byte(nil), 0
@@ -3168,8 +3470,8 @@ func TestScanString(t *testing.T) {
 
 func benchmarkScanString(
 	b *testing.B, name string,
-	quoted func(*Scanner, byte) (byte, []byte, int),
-	relaxed func(*Scanner) (byte, []byte, int),
+	quoted func(*scanner, byte) (byte, []byte, int),
+	relaxed func(*scanner) (byte, []byte, int),
 ) {
 	var buffer [1 << 12]byte
 
@@ -3181,16 +3483,15 @@ func benchmarkScanString(
 			// Setup
 			input, _ := setupValidString(test.Benchmark(b), param)
 			reader := strings.NewReader(input)
-			scanner := Scanner{}
+			scanner := scanner{}
 
 			b.SetBytes(reader.Size())
 
 			// Loop
 			return func(*testing.B) {
 				test.Must(reader.Seek(0, 0))
-				scanner = Scanner{
-					reader: *NewReader(buffer[:0], reader),
-				}
+				scanner.reader = *NewSource(reader, buffer[:0])
+				scanner.SetMode(param.mode)
 				scanner.reader.extend()
 				window := scanner.reader.window()
 
@@ -3222,14 +3523,14 @@ func BenchmarkScanString(b *testing.B) {
 // scannerStringFailParams holds the test parameters for scanner fail paths.
 type scannerStringFailParams struct {
 	input   string
-	quoted  func(*Scanner, byte) (byte, []byte, int)
-	relaxed func(*Scanner) (byte, []byte, int)
+	quoted  func(*scanner, byte) (byte, []byte, int)
+	relaxed func(*scanner) (byte, []byte, int)
 }
 
 var scannerStringFailTestCases = map[string]scannerStringFailParams{
 	// Invalid unicode in a double-quoted string.
 	"quoted-unicode-fail": {
-		input: "\"\\u!!!!\"", quoted: (*Scanner).quoted,
+		input: "\"\\u!!!!\"", quoted: (*scanner).quoted,
 	},
 	// Invalid unicode in a quotedo string.
 	"quotedo-unicode-fail": {
@@ -3237,15 +3538,15 @@ var scannerStringFailTestCases = map[string]scannerStringFailParams{
 	},
 	// EOF in the escape sub-loop of a relaxed string.
 	"relaxed-eof-escape": {
-		input: "hello\\", relaxed: (*Scanner).relaxed,
+		input: "hello\\", relaxed: (*scanner).relaxed,
 	},
 	// EOF after first byte of UTF-8 whitespace in relaxed.
 	"relaxed-eof-uspace": {
-		input: "hello\xC2", relaxed: (*Scanner).relaxed,
+		input: "hello\xC2", relaxed: (*scanner).relaxed,
 	},
 	// Invalid unicode in a relaxed string.
 	"relaxed-unicode-fail": {
-		input: "hello\\u!!!!,", relaxed: (*Scanner).relaxed,
+		input: "hello\\u!!!!,", relaxed: (*scanner).relaxed,
 	},
 	// EOF in the escape sub-loop of a relaxedo string.
 	"relaxedo-eof-escape": {
@@ -3267,10 +3568,8 @@ func TestScanStringFail(t *testing.T) {
 	test.Map(t, scannerStringFailTestCases).
 		Run(func(t test.Test, param scannerStringFailParams) {
 			// Given
-			scanner := NewScanner(
-				strings.NewReader(param.input),
-				make([]byte, 0, 64),
-			)
+			scanner := test.Cast[*scanner](NewScannerSource(NewTestReader(
+				strings.NewReader(param.input), 1), make([]byte, 0, 64)))
 			scanner.reader.extend()
 			window := scanner.reader.window()
 			typ, token, offset := byte(0), []byte(nil), 0
@@ -3370,15 +3669,14 @@ var unicodeTestCases = map[string]unicodeParams{
 
 func testScanUnicode(
 	t *testing.T, name string,
-	call func(*Scanner, int, []byte) (rune, int, []byte, bool),
+	call func(*scanner, int, []byte) (rune, int, []byte, bool),
 ) {
 	test.Map(t, unicodeTestCases).
 		Prefix("method=" + name + "/test=").
 		Run(func(t test.Test, param unicodeParams) {
 			// Given
-			scanner := NewScanner(NewTestReader(
-				strings.NewReader(param.input), 1),
-				make([]byte, 0, 64))
+			scanner := test.Cast[*scanner](NewScannerSource(NewTestReader(
+				strings.NewReader(param.input), 1), make([]byte, 0, 64)))
 			scanner.reader.extend()
 			window := scanner.reader.window()
 
@@ -3395,13 +3693,13 @@ func testScanUnicode(
 }
 
 func TestScanUnicode(t *testing.T) {
-	testScanUnicode(t, "unicode", (*Scanner).unicode)
-	testScanUnicode(t, "unicodex", (*Scanner).unicodex)
+	testScanUnicode(t, "unicode", (*scanner).unicode)
+	testScanUnicode(t, "unicodex", (*scanner).unicodex)
 }
 
 func benchmarkScanUnicode(
 	b *testing.B, name string,
-	call func(*Scanner, int, []byte) (rune, int, []byte, bool),
+	call func(*scanner, int, []byte) (rune, int, []byte, bool),
 ) {
 	test.Map(test.Benchmark(b), unicodeTestCases).
 		Prefix("method=" + name + "/test=").
@@ -3414,10 +3712,8 @@ func benchmarkScanUnicode(
 		}).
 		Benchmark(func(b *testing.B, param unicodeParams) func(*testing.B) {
 			// Setup
-			scanner := NewScanner(
-				strings.NewReader(param.input),
-				make([]byte, 0, 64),
-			)
+			scanner := test.Cast[*scanner](NewScannerSource(
+				strings.NewReader(param.input), make([]byte, 0, 64)))
 			scanner.reader.extend()
 			window := scanner.reader.window()
 
@@ -3435,6 +3731,6 @@ func benchmarkScanUnicode(
 }
 
 func BenchmarkScanUnicode(b *testing.B) {
-	benchmarkScanUnicode(b, "unicode", (*Scanner).unicode)
-	// benchmarkScanUnicode(b, "unicodex", (*Scanner).unicodex)
+	benchmarkScanUnicode(b, "unicode", (*scanner).unicode)
+	// benchmarkScanUnicode(b, "unicodex", (*scanner).unicodex)
 }

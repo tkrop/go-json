@@ -9,24 +9,24 @@ import (
 )
 
 var (
-	quotedx   = wrapQuoted((*Scanner).quotedx)
-	quotedOx  = wrapQuoted_((*Scanner).quoted_x)
-	relaxedx  = wrapRelaxed((*Scanner).relaxedx)
-	relaxedOx = wrapRelaxed_((*Scanner).relaxed_x)
+	quotedx   = wrapQuoted((*scanner).quotedx)
+	quotedOx  = wrapQuoted_((*scanner).quoted_x)
+	relaxedx  = wrapRelaxed((*scanner).relaxedx)
+	relaxedOx = wrapRelaxed_((*scanner).relaxed_x)
 )
 
 // scannerStringFailExtParams holds parameters for extension string fail paths.
 type scannerStringFailExtParams struct {
 	input   string
-	quoted  func(*Scanner, byte) (byte, []byte, int)
-	relaxed func(*Scanner) (byte, []byte, int)
+	quoted  func(*scanner, byte) (byte, []byte, int)
+	relaxed func(*scanner) (byte, []byte, int)
 }
 
 // scannerStringFailExtTestCases defines extension-only string failure paths.
 var scannerStringFailExtTestCases = map[string]scannerStringFailExtParams{
 	// Invalid unicode in a quotedx (bulk-scan) string.
 	"quotedx-unicode-fail": {
-		input: `"\u!!!!"`, quoted: (*Scanner).quotedx,
+		input: `"\u!!!!"`, quoted: (*scanner).quotedx,
 	},
 	// Invalid unicode in a quotedox string.
 	"quotedox-unicode-fail": {
@@ -34,11 +34,11 @@ var scannerStringFailExtTestCases = map[string]scannerStringFailExtParams{
 	},
 	// EOF in the probe-phase escape sub-loop of quotedx (no closing quote).
 	"quotedx-probe-eof-escape": {
-		input: "\"hello\\n\\", quoted: (*Scanner).quotedx,
+		input: "\"hello\\n\\", quoted: (*scanner).quotedx,
 	},
 	// Invalid unicode in the probe-phase escape of quotedx.
 	"quotedx-probe-unicode-fail": {
-		input: "\"hello\\n\\u!!!!", quoted: (*Scanner).quotedx,
+		input: "\"hello\\n\\u!!!!", quoted: (*scanner).quotedx,
 	},
 	// EOF in the probe-phase escape sub-loop of quotedox.
 	"quotedox-probe-eof-escape": {
@@ -50,19 +50,19 @@ var scannerStringFailExtTestCases = map[string]scannerStringFailExtParams{
 	},
 	// EOF in the escape sub-loop of a relaxedx string.
 	"relaxedx-eof-escape": {
-		input: `hello\`, relaxed: (*Scanner).relaxedx,
+		input: `hello\`, relaxed: (*scanner).relaxedx,
 	},
 	// EOF after first byte of UTF-8 whitespace in relaxedx bulk phase.
 	"relaxedx-eof-uspace-bulk": {
-		input: "hello\xC2", relaxed: (*Scanner).relaxedx,
+		input: "hello\xC2", relaxed: (*scanner).relaxedx,
 	},
 	// EOF after first byte of UTF-8 whitespace in relaxedx probe phase.
 	"relaxedx-eof-uspace-probe": {
-		input: "hello\\n\xC2", relaxed: (*Scanner).relaxedx,
+		input: "hello\\n\xC2", relaxed: (*scanner).relaxedx,
 	},
 	// Invalid unicode in a relaxedx string.
 	"relaxedx-unicode-fail": {
-		input: `hello\u!!!!,`, relaxed: (*Scanner).relaxedx,
+		input: `hello\u!!!!,`, relaxed: (*scanner).relaxedx,
 	},
 	// EOF in the escape sub-loop of a relaxedox string.
 	"relaxedox-eof-escape": {
@@ -87,10 +87,8 @@ func TestScanStringFailExt(t *testing.T) {
 	test.Map(t, scannerStringFailExtTestCases).
 		Run(func(t test.Test, param scannerStringFailExtParams) {
 			// Given
-			scanner := NewScanner(
-				strings.NewReader(param.input),
-				make([]byte, 0, 64),
-			)
+			scanner := test.Cast[*scanner](NewScannerSource(
+				strings.NewReader(param.input), make([]byte, 0, 64)))
 			scanner.reader.extend()
 			window := scanner.reader.window()
 			typ, token, offset := byte(0), []byte(nil), 0
@@ -212,9 +210,8 @@ func TestScanRelaxedxEdge(t *testing.T) {
 	test.Map(t, relaxedxEdgeTestCases).
 		Run(func(t test.Test, param relaxedxEdgeParams) {
 			// Given
-			scanner := NewScanner(NewTestReader(
-				strings.NewReader(param.input), 5),
-				make([]byte, 0, 64))
+			scanner := test.Cast[*scanner](NewScannerSource(NewTestReader(
+				strings.NewReader(param.input), 5), make([]byte, 0, 64)))
 			scanner.reader.skip()
 
 			// When
@@ -237,9 +234,8 @@ func TestScanRelaxedxEdge_(t *testing.T) {
 	test.Map(t, relaxedxEdgeTestCases).
 		Run(func(t test.Test, param relaxedxEdgeParams) {
 			// Given
-			scanner := NewScanner(NewTestReader(
-				strings.NewReader(param.input), 5),
-				make([]byte, 0, 64))
+			scanner := test.Cast[*scanner](NewScannerSource(NewTestReader(
+				strings.NewReader(param.input), 5), make([]byte, 0, 64)))
 			scanner.reader.skip()
 
 			// When
@@ -305,10 +301,8 @@ func TestScanRelaxedxDirect(t *testing.T) {
 	test.Map(t, relaxedxDirectTestCases).
 		Run(func(t test.Test, param relaxedxDirectParams) {
 			// Given
-			scanner := NewScanner(
-				strings.NewReader(param.input),
-				make([]byte, 0, 64),
-			)
+			scanner := test.Cast[*scanner](NewScannerSource(
+				strings.NewReader(param.input), make([]byte, 0, 64)))
 			scanner.reader.skip()
 
 			// When
@@ -326,10 +320,8 @@ func TestScanRelaxedxDirect_(t *testing.T) {
 	test.Map(t, relaxedxDirectTestCases).
 		Run(func(t test.Test, param relaxedxDirectParams) {
 			// Given
-			scanner := NewScanner(
-				strings.NewReader(param.input),
-				make([]byte, 0, 64),
-			)
+			scanner := test.Cast[*scanner](NewScannerSource(
+				strings.NewReader(param.input), make([]byte, 0, 64)))
 			scanner.reader.skip()
 
 			// When

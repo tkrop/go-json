@@ -28,14 +28,14 @@ func NewState(offset, bytes, lines, chars int) state {
 	}
 }
 
-// NewReaderState creates a Reader with the given buffer, growing mode, state, and
+// NewReaderState creates a Reader with the given buffer, mode, state, and
 // error.
 func NewReaderState(
-	buffer []byte, breath bool, new, min int, state state, err error,
-) Reader {
-	return Reader{
+	buffer []byte, mode Mode, new, min int, state state, err error,
+) *Reader {
+	return &Reader{
 		buffer: buffer,
-		breath: breath,
+		mode:   mode,
 		new:    new,
 		min:    min,
 		offset: state.offset,
@@ -44,6 +44,17 @@ func NewReaderState(
 		char:   state.chars,
 		err:    err,
 	}
+}
+
+// copyReader creates a deep copy of the given Reader, including its buffer.
+func copyReader(reader *Reader) *Reader {
+	cloned := *reader
+	if reader.buffer != nil {
+		cloned.buffer = make([]byte, len(reader.buffer), cap(reader.buffer))
+		copy(cloned.buffer, reader.buffer)
+	}
+
+	return &cloned
 }
 
 // stepReader is a simple io.Reader implementation that returns predefined
@@ -69,6 +80,7 @@ func (r *stepReader) Read(buffer []byte) (int, error) {
 
 	step := r.steps[r.index]
 	r.index++
+
 	return copy(buffer, []byte(step.data)), step.err
 }
 
@@ -160,7 +172,7 @@ func TestRelease(t *testing.T) {
 			}
 
 			reader := NewReaderState([]byte(data),
-				true, 4, 8, param.setup, nil)
+				Evict, 4, 8, param.setup, nil)
 
 			// When
 			for _, s := range param.inputs {
@@ -206,7 +218,7 @@ func TestAdvance(t *testing.T) {
 	test.Map(t, advanceTestCases).
 		Run(func(t test.Test, param advanceParams) {
 			// Given
-			reader := NewReaderState(nil, true, 4, 8, param.setup, nil)
+			reader := NewReaderState(nil, Evict, 4, 8, param.setup, nil)
 
 			// When
 			reader.advance_(param.num, param.lines, param.chars)
@@ -245,7 +257,7 @@ func TestAdvanceOffset(t *testing.T) {
 	test.Map(t, advanceOffsetTestCases).
 		Run(func(t test.Test, param advanceOffsetParams) {
 			// Given
-			reader := NewReaderState(nil, true, 4, 8, param.setup, nil)
+			reader := NewReaderState(nil, Evict, 4, 8, param.setup, nil)
 
 			// When
 			reader.advance(param.offset)
@@ -290,7 +302,7 @@ func TestPosition(t *testing.T) {
 		Run(func(t test.Test, param positionParams) {
 			// Given
 			reader := NewReaderState([]byte(param.data),
-				true, 4, 8, param.setup, nil)
+				Evict, 4, 8, param.setup, nil)
 
 			// When
 			for _, num := range param.release {
@@ -309,9 +321,9 @@ func TestPosition(t *testing.T) {
 // extendParams defines the parameters for testing the extend method of
 // byteReader.
 type extendParams struct {
-	reader Reader
+	reader *Reader
 	steps  []step
-	expect Reader
+	expect *Reader
 	num    int
 }
 
@@ -320,84 +332,83 @@ type extendParams struct {
 var extendTestCases = map[string]extendParams{
 	"existing-error": {
 		reader: NewReaderState([]byte("hello"),
-			true, 4, 8, NewState(2, 11, 3, 7), io.EOF),
+			Evict, 4, 8, NewState(2, 11, 3, 7), io.EOF),
 		expect: NewReaderState([]byte("hello"),
-			true, 4, 8, NewState(2, 11, 3, 7), io.EOF),
+			Evict, 4, 8, NewState(2, 11, 3, 7), io.EOF),
 	},
 	"extend-buffer": {
 		reader: NewReaderState([]byte("ab"),
-			true, 4, 8, NewState(0, 0, 0, 0), nil),
+			Evict, 4, 8, NewState(0, 0, 0, 0), nil),
 		steps: []step{{data: "xy"}},
 		expect: NewReaderState(
 			append(make([]byte, 0, 4), []byte("abxy")...),
-			true, 4, 8, NewState(0, 0, 0, 0), nil),
+			Evict, 4, 8, NewState(0, 0, 0, 0), nil),
 		num: 2,
 	},
 	"reset-empty-window": {
 		reader: NewReaderState(fillBuffer(3, 3, 'x'),
-			true, 4, 8, NewState(3, 9, 1, 4), nil),
+			Evict, 4, 8, NewState(3, 9, 1, 4), nil),
 		steps: []step{{data: "hi", err: io.EOF}},
 		expect: NewReaderState(
 			append(make([]byte, 0, 2), []byte("hi")...),
-			true, 4, 8, NewState(0, 9, 1, 4), io.EOF),
+			Evict, 4, 8, NewState(0, 9, 1, 4), io.EOF),
 		num: 2,
 	},
 	"compact-before-read": {
 		reader: NewReaderState(func() []byte {
-			buffer := fillBuffer(9, 16, 'x')
+			buffer := fillBuffer(9, 16, 'y')
 			copy(buffer[6:], []byte("abc"))
+
 			return buffer
-		}(), true, 4, 8, NewState(6, 4, 0, 4), nil),
+		}(), Evict, 4, 8, NewState(6, 4, 0, 4), nil),
 		steps: []step{{data: "yz"}},
 		expect: NewReaderState(func() []byte {
 			return []byte("abcyz")
-		}(), true, 4, 8, NewState(0, 4, 0, 4), nil),
+		}(), Evict, 4, 8, NewState(0, 4, 0, 4), nil),
 		num: 2,
 	},
 	"grow-before-read": {
 		reader: NewReaderState(func() []byte {
-			buffer := fillBuffer(9, 13, 'x')
+			buffer := fillBuffer(9, 13, 'z')
 			copy(buffer[1:], []byte("mno"))
+
 			return buffer
-		}(), true, 4, 8, NewState(1, 6, 1, 2), nil),
-		steps: []step{{data: "z", err: io.EOF}},
+		}(), Evict, 4, 8, NewState(1, 6, 1, 2), nil),
+		steps: []step{{data: "y", err: io.EOF}},
 		expect: NewReaderState(func() []byte {
-			return []byte("mnoxxxxxz")
-		}(), true, 4, 8, NewState(0, 6, 1, 2), io.EOF),
+			return []byte("mnozzzzzy")
+		}(), Evict, 4, 8, NewState(0, 6, 1, 2), io.EOF),
 		num: 1,
 	},
 	"shrink-mode-compacts-window": {
 		reader: NewReaderState([]byte("prefixtoken"),
-			true, 4, 8, NewState(6, 0, 0, 0), nil),
+			Evict, 4, 8, NewState(6, 0, 0, 0), nil),
 		steps: []step{{data: "X", err: io.EOF}},
 		expect: NewReaderState([]byte("tokenX"),
-			true, 4, 8, NewState(0, 0, 0, 0), io.EOF),
+			Evict, 4, 8, NewState(0, 0, 0, 0), io.EOF),
 		num: 1,
 	},
 	"grow-only-mode-keeps-prefix": {
 		reader: NewReaderState(
 			append(make([]byte, 0, 20), []byte("prefixtoken")...),
-			false, 4, 8, NewState(6, 0, 0, 0), nil),
+			Retain, 4, 8, NewState(6, 0, 0, 0), nil),
 		steps: []step{{data: "X", err: io.EOF}},
 		expect: NewReaderState(func() []byte {
 			return []byte("prefixtokenX")
-		}(), false, 4, 8, NewState(6, 0, 0, 0), io.EOF),
+		}(), Retain, 4, 8, NewState(6, 0, 0, 0), io.EOF),
 		num: 1,
 	},
 	"grow-only-mode-grow-copies-full-buffer": {
 		reader: NewReaderState(func() []byte {
-			buffer := fillBuffer(9, 13, 'x')
+			buffer := fillBuffer(9, 13, 'a')
 			copy(buffer[1:], []byte("mno"))
+
 			return buffer
-		}(), false, 4, 8, NewState(1, 2, 0, 2), nil),
+		}(), Retain, 4, 8, NewState(1, 2, 0, 2), nil),
 		steps: []step{{data: "z", err: io.EOF}},
-		expect: NewReaderState(func() []byte {
-			buffer := fillBuffer(26, 26, 0)
-			copy(buffer, []byte("xmnoxxxxx"))
-			return buffer
-		}(),
-			false, 4, 8, NewState(1, 2, 0, 2), io.EOF),
-		num: 0,
+		expect: NewReaderState([]byte("amnoaaaaaz"),
+			Retain, 4, 8, NewState(1, 2, 0, 2), io.EOF),
+		num: 1,
 	},
 }
 
@@ -407,7 +418,7 @@ func TestExtend(t *testing.T) {
 	test.Map(t, extendTestCases).
 		Run(func(t test.Test, param extendParams) {
 			// Given
-			reader := param.reader
+			reader := copyReader(param.reader)
 			reader.reader = &stepReader{steps: param.steps}
 
 			// When
@@ -428,7 +439,7 @@ func TestExtend(t *testing.T) {
 
 // skipParams defines the parameters for testing the skip method of byteReader.
 type skipParams struct {
-	reader Reader
+	reader *Reader
 	steps  []step
 	skip   int
 	remain string
@@ -441,7 +452,7 @@ type skipParams struct {
 var skipTestCases = map[string]skipParams{
 	"all": {
 		reader: NewReaderState(make([]byte, 0, 64),
-			false, 4, 8, NewState(0, 0, 0, 0), nil),
+			Retain, 4, 8, NewState(0, 0, 0, 0), nil),
 		steps:  []step{{data: " \t\n", err: io.EOF}},
 		skip:   3,
 		remain: "",
@@ -450,7 +461,7 @@ var skipTestCases = map[string]skipParams{
 	},
 	"none": {
 		reader: NewReaderState([]byte("abc"),
-			false, 4, 8, NewState(0, 0, 0, 0), nil),
+			Retain, 4, 8, NewState(0, 0, 0, 0), nil),
 		skip:   0,
 		remain: "abc",
 		state:  Position{Byte: 0, Line: 0, Char: 0},
@@ -458,7 +469,7 @@ var skipTestCases = map[string]skipParams{
 	},
 	"offset": {
 		reader: NewReaderState([]byte("zz \nabc"),
-			false, 4, 8, NewState(2, 5, 1, 2), nil),
+			Retain, 4, 8, NewState(2, 5, 1, 2), nil),
 		skip:   2,
 		remain: "abc",
 		state:  Position{Byte: 7, Line: 2, Char: 0},
@@ -466,7 +477,7 @@ var skipTestCases = map[string]skipParams{
 	},
 	"spaces": {
 		reader: NewReaderState(make([]byte, 0, 64),
-			false, 4, 8, NewState(0, 0, 0, 0), nil),
+			Retain, 4, 8, NewState(0, 0, 0, 0), nil),
 		steps:  []step{{data: " \t\nabc", err: io.EOF}},
 		skip:   3,
 		remain: "abc",
@@ -475,7 +486,7 @@ var skipTestCases = map[string]skipParams{
 	},
 	"unicodes": {
 		reader: NewReaderState(make([]byte, 0, 64),
-			false, 4, 8, NewState(0, 0, 0, 0), nil),
+			Retain, 4, 8, NewState(0, 0, 0, 0), nil),
 		steps:  []step{{data: "\xE2\x80"}, {data: "\xA8x", err: io.EOF}},
 		skip:   3,
 		remain: "x",
@@ -484,7 +495,7 @@ var skipTestCases = map[string]skipParams{
 	},
 	"mixed": {
 		reader: NewReaderState(make([]byte, 0, 64),
-			false, 4, 8, NewState(0, 0, 0, 0), nil),
+			Retain, 4, 8, NewState(0, 0, 0, 0), nil),
 		steps: []step{
 			{data: " \xC2\xA0\nabc", err: io.EOF},
 		},
@@ -501,7 +512,7 @@ func TestSkip(t *testing.T) {
 	test.Map(t, skipTestCases).
 		Run(func(t test.Test, param skipParams) {
 			// Given
-			reader := param.reader
+			reader := copyReader(param.reader)
 			reader.reader = &stepReader{steps: param.steps}
 
 			// When
@@ -518,7 +529,7 @@ func TestSkip(t *testing.T) {
 // compareParams defines the parameters for testing the compare method of
 // byteReader.
 type compareParams struct {
-	reader Reader
+	reader *Reader
 	steps  []step
 	offset int
 	expect []byte
@@ -533,21 +544,21 @@ type compareParams struct {
 var compareTestCases = map[string]compareParams{
 	"match-buffer": {
 		reader: NewReaderState([]byte("prefix"),
-			false, 4, 8, NewState(0, 2, 1, 3), nil),
+			Retain, 4, 8, NewState(0, 2, 1, 3), nil),
 		expect: []byte("pre"),
 		match:  true,
 		state:  Position{Byte: 2, Line: 1, Char: 3},
 	},
 	"mismatch-buffer": {
 		reader: NewReaderState([]byte("prefix"),
-			false, 4, 8, NewState(0, 2, 1, 3), nil),
+			Retain, 4, 8, NewState(0, 2, 1, 3), nil),
 		expect: []byte("pro"),
 		match:  false,
 		state:  Position{Byte: 2, Line: 1, Char: 3},
 	},
 	"match-extend": {
 		reader: NewReaderState(make([]byte, 0, 64),
-			false, 4, 8, NewState(0, 0, 0, 0), nil),
+			Retain, 4, 8, NewState(0, 0, 0, 0), nil),
 		steps:  []step{{data: "ab"}, {data: "cd", err: io.EOF}},
 		expect: []byte("abcd"),
 		match:  true,
@@ -556,7 +567,7 @@ var compareTestCases = map[string]compareParams{
 	},
 	"short-eof": {
 		reader: NewReaderState(make([]byte, 0, 64),
-			false, 4, 8, NewState(0, 0, 0, 0), nil),
+			Retain, 4, 8, NewState(0, 0, 0, 0), nil),
 		steps:  []step{{data: "ab", err: io.EOF}},
 		expect: []byte("abc"),
 		match:  false,
@@ -571,7 +582,7 @@ func TestCompare(t *testing.T) {
 	test.Map(t, compareTestCases).
 		Run(func(t test.Test, param compareParams) {
 			// Given
-			reader := param.reader
+			reader := copyReader(param.reader)
 			reader.reader = &stepReader{steps: param.steps}
 
 			// When
@@ -587,7 +598,7 @@ func TestCompare(t *testing.T) {
 // accessParams defines the parameters for testing byteReader byte access
 // methods such as peek and get.
 type accessParams struct {
-	reader Reader
+	reader *Reader
 	steps  []step
 	offset int
 	expect byte
@@ -599,18 +610,26 @@ type accessParams struct {
 // accessTestCases defines shared test cases for testing byteReader byte access
 // methods.
 var accessTestCases = map[string]accessParams{
-	"buffer-hit": {
+	"buffer-only-eof": {
+		reader: NewBuffer([]byte("x")),
+		offset: 1,
+		expect: EOF,
+		ok:     false,
+		state:  Position{Byte: 0, Line: 0, Char: 0},
+		error:  io.EOF,
+	},
+	"buffer-current-hit": {
 		reader: NewReaderState([]byte("abc"),
-			false, 4, 8, NewState(1, 2, 3, 4), nil),
+			Retain, 4, 8, NewState(1, 2, 3, 4), nil),
 		offset: 0,
 		expect: 'b',
 		ok:     true,
 		state:  Position{Byte: 2, Line: 3, Char: 4},
 		error:  nil,
 	},
-	"extend-hit": {
+	"reader-first-hit": {
 		reader: NewReaderState(make([]byte, 0, 64),
-			false, 4, 8, NewState(0, 0, 0, 0), nil),
+			Retain, 4, 8, NewState(0, 0, 0, 0), nil),
 		steps:  []step{{data: "x", err: io.EOF}},
 		offset: 0,
 		expect: 'x',
@@ -618,9 +637,9 @@ var accessTestCases = map[string]accessParams{
 		state:  Position{Byte: 0, Line: 0, Char: 0},
 		error:  io.EOF,
 	},
-	"eof": {
+	"reader-immediate-eof": {
 		reader: NewReaderState(make([]byte, 0, 64),
-			false, 4, 8, NewState(0, 0, 0, 0), nil),
+			Retain, 4, 8, NewState(0, 0, 0, 0), nil),
 		steps:  []step{{err: io.EOF}},
 		offset: 0,
 		expect: EOF,
@@ -628,27 +647,27 @@ var accessTestCases = map[string]accessParams{
 		state:  Position{Byte: 0, Line: 0, Char: 0},
 		error:  io.EOF,
 	},
-	"buffer-hit-offset": {
+	"buffer-request-offset-hit": {
 		reader: NewReaderState([]byte("abc"),
-			false, 4, 8, NewState(0, 2, 1, 5), nil),
+			Retain, 4, 8, NewState(0, 2, 1, 5), nil),
 		offset: 2,
 		expect: 'c',
 		ok:     true,
 		state:  Position{Byte: 2, Line: 1, Char: 5},
 		error:  nil,
 	},
-	"buffer-hit-with-reader-offset": {
+	"buffer-window-offset-hit": {
 		reader: NewReaderState([]byte("zzab"),
-			false, 4, 8, NewState(2, 4, 0, 4), nil),
+			Retain, 4, 8, NewState(2, 4, 0, 4), nil),
 		offset: 1,
 		expect: 'b',
 		ok:     true,
 		state:  Position{Byte: 4, Line: 0, Char: 4},
 		error:  nil,
 	},
-	"extend-hit-offset": {
+	"reader-request-offset-hit": {
 		reader: NewReaderState(make([]byte, 0, 64),
-			false, 4, 8, NewState(0, 0, 0, 0), nil),
+			Retain, 4, 8, NewState(0, 0, 0, 0), nil),
 		steps:  []step{{data: "ab"}, {data: "c", err: io.EOF}},
 		offset: 2,
 		expect: 'c',
@@ -656,9 +675,9 @@ var accessTestCases = map[string]accessParams{
 		state:  Position{Byte: 0, Line: 0, Char: 0},
 		error:  io.EOF,
 	},
-	"eof-short": {
+	"reader-request-offset-eof": {
 		reader: NewReaderState(make([]byte, 0, 64),
-			false, 4, 8, NewState(0, 0, 0, 0), nil),
+			Retain, 4, 8, NewState(0, 0, 0, 0), nil),
 		steps:  []step{{data: "ab", err: io.EOF}},
 		offset: 3,
 		expect: EOF,
@@ -683,8 +702,10 @@ func TestPeek(t *testing.T) {
 		Filter(offsetZero()).
 		Run(func(t test.Test, param accessParams) {
 			// Given
-			reader := param.reader
-			reader.reader = &stepReader{steps: param.steps}
+			reader := copyReader(param.reader)
+			if param.steps != nil {
+				reader.reader = &stepReader{steps: param.steps}
+			}
 
 			// When
 			actual, ok := reader.peek()
@@ -703,8 +724,10 @@ func TestGet(t *testing.T) {
 	test.Map(t, accessTestCases).
 		Run(func(t test.Test, param accessParams) {
 			// Given
-			reader := param.reader
-			reader.reader = &stepReader{steps: param.steps}
+			reader := copyReader(param.reader)
+			if param.steps != nil {
+				reader.reader = &stepReader{steps: param.steps}
+			}
 
 			// When
 			actual, ok := reader.get(param.offset)
